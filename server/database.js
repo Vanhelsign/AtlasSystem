@@ -63,6 +63,29 @@ for (const [nombre, tipo] of [
     db.exec(`ALTER TABLE solicitudes_cotizacion ADD COLUMN ${nombre} ${tipo};`)
   }
 }
+
+// ATLAS v2, Fase A: columnas nuevas, todas con NULL o valor por defecto para conservar los registros existentes.
+for (const [tabla, columnas] of [
+  ['prospectos', [
+    ['etapa_cliente', "TEXT NOT NULL DEFAULT 'prospecto' CHECK (etapa_cliente IN ('prospecto', 'cliente_instalado'))"],
+  ]],
+  ['productos_catalogo', [
+    ['marca', 'TEXT'],
+    ['proveedor_id', 'INTEGER REFERENCES proveedores(id) ON DELETE SET NULL'],
+  ]],
+  ['cotizaciones_versiones', [
+    ['ahorro_anual_est', 'REAL CHECK (ahorro_anual_est IS NULL OR ahorro_anual_est >= 0)'],
+    ['retorno_inversion_anios', 'REAL CHECK (retorno_inversion_anios IS NULL OR retorno_inversion_anios >= 0)'],
+    ['estatus_respuesta', "TEXT NOT NULL DEFAULT 'pendiente' CHECK (estatus_respuesta IN ('pendiente', 'aprobada', 'rechazada', 'pago_vencido'))"],
+  ]],
+]) {
+  const existentes = db.prepare(`PRAGMA table_info(${tabla})`).all()
+  for (const [nombre, tipo] of columnas) {
+    if (!existentes.some((columna) => columna.name === nombre)) {
+      db.exec(`ALTER TABLE ${tabla} ADD COLUMN ${nombre} ${tipo};`)
+    }
+  }
+}
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS prospectos_email_unico
   ON prospectos(email COLLATE NOCASE)

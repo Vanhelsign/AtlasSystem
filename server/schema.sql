@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS prospectos (
   telefono TEXT,
   email TEXT,
   estado TEXT NOT NULL DEFAULT 'Nuevo',
+  etapa_cliente TEXT NOT NULL DEFAULT 'prospecto' CHECK (etapa_cliente IN ('prospecto', 'cliente_instalado')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS productos_catalogo (
   codigo TEXT NOT NULL COLLATE NOCASE UNIQUE,
   tipo TEXT NOT NULL CHECK (tipo IN ('Panel', 'Inversor', 'Estructura', 'Cableado', 'Mano de obra')),
   modelo TEXT NOT NULL CHECK (length(trim(modelo)) > 0),
+  marca TEXT,
+  proveedor_id INTEGER REFERENCES proveedores(id) ON DELETE SET NULL,
   costo_unitario REAL NOT NULL CHECK (costo_unitario >= 0),
   clasificacion TEXT NOT NULL CHECK (clasificacion IN ('material', 'servicio')),
   existencias INTEGER,
@@ -198,7 +201,12 @@ CREATE TABLE IF NOT EXISTS cotizaciones_versiones (
   version INTEGER NOT NULL CHECK (version > 0),
   costo_interno_total REAL NOT NULL CHECK (costo_interno_total >= 0),
   precio_venta REAL NOT NULL CHECK (precio_venta > 0),
+  ahorro_anual_est REAL CHECK (ahorro_anual_est IS NULL OR ahorro_anual_est >= 0),
+  retorno_inversion_anios REAL CHECK (retorno_inversion_anios IS NULL OR retorno_inversion_anios >= 0),
   estado TEXT NOT NULL DEFAULT 'enviada' CHECK (estado IN ('enviada')),
+  estatus_respuesta TEXT NOT NULL DEFAULT 'pendiente' CHECK (estatus_respuesta IN (
+    'pendiente', 'aprobada', 'rechazada', 'pago_vencido'
+  )),
   emitida_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (solicitud_id, version),
   FOREIGN KEY (solicitud_id) REFERENCES solicitudes_cotizacion(id) ON DELETE CASCADE,
@@ -221,3 +229,74 @@ CREATE TABLE IF NOT EXISTS cotizacion_version_items (
 
 CREATE INDEX IF NOT EXISTS devoluciones_revision_idx ON revision_tecnica_devoluciones(revision_id, devuelta_at);
 CREATE INDEX IF NOT EXISTS cotizaciones_solicitud_idx ON cotizaciones_versiones(solicitud_id, version);
+
+CREATE TABLE IF NOT EXISTS firmas_cotizacion (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cotizacion_id INTEGER NOT NULL UNIQUE,
+  cuenta_cliente_id INTEGER NOT NULL,
+  firma_png_b64 TEXT NOT NULL CHECK (length(firma_png_b64) > 0),
+  direccion_ip TEXT,
+  user_agent TEXT,
+  firmada_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (cotizacion_id) REFERENCES cotizaciones_versiones(id) ON DELETE RESTRICT,
+  FOREIGN KEY (cuenta_cliente_id) REFERENCES cuentas_cliente(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS ordenes_instalacion (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cotizacion_id INTEGER NOT NULL UNIQUE,
+  tecnico_id INTEGER,
+  fecha_programada TEXT,
+  fecha_fin_real TEXT,
+  estatus_obra TEXT NOT NULL DEFAULT 'asignada' CHECK (estatus_obra IN (
+    'asignada', 'en_progreso', 'incidencia', 'completada'
+  )),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK (estatus_obra <> 'completada' OR fecha_fin_real IS NOT NULL),
+  FOREIGN KEY (cotizacion_id) REFERENCES cotizaciones_versiones(id) ON DELETE RESTRICT,
+  FOREIGN KEY (tecnico_id) REFERENCES usuarios_personal(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS checklist_evidencias (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  orden_id INTEGER NOT NULL,
+  etapa TEXT NOT NULL CHECK (etapa IN (
+    'estructura', 'paneles', 'inversor', 'cableado', 'baterias', 'interconexion', 'pruebas'
+  )),
+  completado INTEGER NOT NULL DEFAULT 0 CHECK (completado IN (0, 1)),
+  ruta_foto TEXT,
+  observaciones TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (orden_id) REFERENCES ordenes_instalacion(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS mantenimientos_programados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  orden_id INTEGER NOT NULL,
+  tipo_servicio TEXT NOT NULL CHECK (tipo_servicio IN ('semestral', 'anual')),
+  fecha_limite TEXT NOT NULL,
+  estatus TEXT NOT NULL DEFAULT 'pendiente' CHECK (estatus IN ('pendiente', 'agendado', 'realizado', 'vencido')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (orden_id, tipo_servicio),
+  FOREIGN KEY (orden_id) REFERENCES ordenes_instalacion(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS registro_notificaciones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  prospecto_id INTEGER,
+  destinatario_email TEXT NOT NULL,
+  tipo_correo TEXT NOT NULL CHECK (tipo_correo IN ('credenciales', 'cotizacion_lista', 'recordatorio')),
+  estado_envio TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado_envio IN ('pendiente', 'aceptado', 'fallido', 'entregado')),
+  detalle_error TEXT,
+  enviado_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (prospecto_id) REFERENCES prospectos(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS ordenes_tecnico_idx ON ordenes_instalacion(tecnico_id, estatus_obra);
+CREATE INDEX IF NOT EXISTS checklist_orden_idx ON checklist_evidencias(orden_id);
+CREATE INDEX IF NOT EXISTS mantenimientos_fecha_idx ON mantenimientos_programados(estatus, fecha_limite);
+CREATE INDEX IF NOT EXISTS notificaciones_prospecto_idx ON registro_notificaciones(prospecto_id, created_at);
