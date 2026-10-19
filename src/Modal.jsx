@@ -2,6 +2,8 @@ import { useEffect, useEffectEvent, useId, useRef } from 'react'
 import { createPortal } from 'react-dom'
 
 const ENFOCABLES = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+// Modales abiertos, del más antiguo al más reciente: Escape y Tab solo afectan al de arriba.
+const pilaModales = []
 
 // Ventana emergente reutilizable. Se cierra con Escape, con clic fuera del panel o con el botón ✕,
 // salvo mientras `ocupado` es verdadero. Si recibe `onEnviar`, el contenido funciona como formulario.
@@ -18,6 +20,8 @@ export default function Modal({ titulo, descripcion, children, acciones, error, 
   })
 
   useEffect(() => {
+    const identificador = Symbol('modal')
+    pilaModales.push(identificador)
     const enfocadoAntes = document.activeElement
     const inicial = panel.current.querySelector('[data-autofocus]') ?? panel.current.querySelector('input:not([disabled]), select:not([disabled]), textarea:not([disabled])')
     ;(inicial ?? panel.current).focus()
@@ -25,6 +29,7 @@ export default function Modal({ titulo, descripcion, children, acciones, error, 
     document.body.style.overflow = 'hidden'
 
     const alPresionarTecla = (event) => {
+      if (pilaModales[pilaModales.length - 1] !== identificador) return
       if (event.key === 'Escape') {
         event.preventDefault()
         cerrarConTecla()
@@ -46,6 +51,7 @@ export default function Modal({ titulo, descripcion, children, acciones, error, 
     }
     document.addEventListener('keydown', alPresionarTecla)
     return () => {
+      pilaModales.splice(pilaModales.indexOf(identificador), 1)
       document.removeEventListener('keydown', alPresionarTecla)
       document.body.style.overflow = desbordeAnterior
       enfocadoAntes?.focus?.()

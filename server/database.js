@@ -179,27 +179,41 @@ db.exec(`
   WHERE email IS NOT NULL;
 `)
 
-const insertarProductoInicial = db.prepare(`
-  INSERT OR IGNORE INTO productos_catalogo (
-    codigo, tipo, modelo, costo_unitario, clasificacion,
-    existencias, potencia_w, potencia_kw, activo
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-`)
-for (const producto of [
-  ['PANEL-JA-550', 'Panel', 'JA Solar 550W Mono', 3200, 'material', 80, 550, null],
-  ['INV-GROWATT-5KW', 'Inversor', 'Growatt 5kW String', 14500, 'material', 12, null, 5],
-  ['EST-ALUMINIO', 'Estructura', 'Estructura aluminio', 420, 'material', 200, null, null],
-  ['CABLE-PROTECCIONES', 'Cableado', 'Cableado + protecciones', 3500, 'material', 999, null, null],
-  ['SERV-INST-ESTANDAR', 'Mano de obra', 'Instalación estándar', 8000, 'servicio', null, null, null],
-]) insertarProductoInicial.run(...producto)
+// ATLAS v2 (user_version 2): el catálogo y los proveedores iniciales se cargan una sola vez por base.
+// Así un proveedor eliminado no reaparece al reiniciar y los INSERT ignorados ya no consumen identificadores.
+// Una base existente en v1 ya tiene estos registros; la carga no la altera y solo marca la versión.
+if (db.prepare('PRAGMA user_version').get().user_version < 2) {
+  db.exec('BEGIN')
+  try {
+    const insertarProductoInicial = db.prepare(`
+      INSERT OR IGNORE INTO productos_catalogo (
+        codigo, tipo, modelo, costo_unitario, clasificacion,
+        existencias, potencia_w, potencia_kw, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `)
+    for (const producto of [
+      ['PANEL-JA-550', 'Panel', 'JA Solar 550W Mono', 3200, 'material', 80, 550, null],
+      ['INV-GROWATT-5KW', 'Inversor', 'Growatt 5kW String', 14500, 'material', 12, null, 5],
+      ['EST-ALUMINIO', 'Estructura', 'Estructura aluminio', 420, 'material', 200, null, null],
+      ['CABLE-PROTECCIONES', 'Cableado', 'Cableado + protecciones', 3500, 'material', 999, null, null],
+      ['SERV-INST-ESTANDAR', 'Mano de obra', 'Instalación estándar', 8000, 'servicio', null, null, null],
+    ]) insertarProductoInicial.run(...producto)
 
-const insertarProveedorInicial = db.prepare('INSERT OR IGNORE INTO proveedores (nombre, activo) VALUES (?, 1)')
-for (const nombre of [
-  'SolarCenter (Paneles)',
-  'Krannich Solar (Inversores)',
-  'Exel Solar (Estructuras y Cableado)',
-  'BayWa r.e. (Almacenamiento)',
-]) insertarProveedorInicial.run(nombre)
+    const insertarProveedorInicial = db.prepare('INSERT OR IGNORE INTO proveedores (nombre, activo) VALUES (?, 1)')
+    for (const nombre of [
+      'SolarCenter (Paneles)',
+      'Krannich Solar (Inversores)',
+      'Exel Solar (Estructuras y Cableado)',
+      'BayWa r.e. (Almacenamiento)',
+    ]) insertarProveedorInicial.run(nombre)
+
+    db.exec('PRAGMA user_version = 2;')
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
 
 export const prospectSelect = `
   SELECT

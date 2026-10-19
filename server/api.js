@@ -163,11 +163,14 @@ function validarProducto(value, actual = {}) {
   return { tipo, modelo, marca, proveedorId, costoUnitario, clasificacion, existencias, potenciaW, potenciaKw, capacidadKwh }
 }
 
+const proveedorSelect = `
+  SELECT pr.id, pr.nombre, pr.activo, pr.created_at, pr.updated_at,
+         (SELECT count(*) FROM productos_catalogo pc WHERE pc.proveedor_id = pr.id) AS productos_ligados
+  FROM proveedores pr
+`
+
 function getProveedor(id) {
-  return db.prepare(`
-    SELECT id, nombre, activo, created_at, updated_at
-    FROM proveedores WHERE id = ?
-  `).get(id)
+  return db.prepare(`${proveedorSelect} WHERE pr.id = ?`).get(id)
 }
 
 function validarConsumo(value) {
@@ -775,12 +778,8 @@ app.post('/api/productos/importacion/confirmar', autenticar, permitirRoles('Admi
 })
 
 app.get('/api/proveedores', autenticar, permitirRoles('Administrador', 'Agente', 'Técnico'), (request, response) => {
-  const condicion = request.usuario.rol === 'Administrador' ? '' : ' WHERE activo = 1'
-  response.json(db.prepare(`
-    SELECT id, nombre, activo, created_at, updated_at
-    FROM proveedores${condicion}
-    ORDER BY nombre COLLATE NOCASE
-  `).all())
+  const condicion = request.usuario.rol === 'Administrador' ? '' : ' WHERE pr.activo = 1'
+  response.json(db.prepare(`${proveedorSelect}${condicion} ORDER BY pr.nombre COLLATE NOCASE`).all())
 })
 
 app.post('/api/proveedores', autenticar, permitirRoles('Administrador'), (request, response) => {
@@ -821,6 +820,25 @@ app.patch('/api/proveedores/:id/activo', autenticar, permitirRoles('Administrado
   } catch (error) {
     response.status(400).json({ error: error.message })
   }
+})
+
+// Borrado permanente. La llave foránea ON DELETE SET NULL deja sin proveedor a los productos ligados;
+// los productos y su historial se conservan.
+app.delete('/api/proveedores/:id', autenticar, permitirRoles('Administrador'), (request, response) => {
+  const id = idValido(request.params.id)
+  if (!id) return response.status(400).json({ error: 'Identificador inválido' })
+  let proveedor
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    proveedor = getProveedor(id)
+    if (proveedor) db.prepare('DELETE FROM proveedores WHERE id = ?').run(id)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+  if (!proveedor) return response.status(404).json({ error: 'Proveedor no encontrado' })
+  response.json({ id, nombre: proveedor.nombre, productos_sin_proveedor: proveedor.productos_ligados })
 })
 
 app.get('/api/tecnico/solicitudes', autenticar, permitirRoles('Técnico'), (request, response) => {

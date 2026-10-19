@@ -653,6 +653,9 @@ export default function App() {
   const [usuarioActual, setUsuarioActual] = useState(null);
 
   const [pagina, setPagina] = useState("dashboard");
+  const [sidebarContraido, setSidebarContraido] = useState(() => {
+    try { return window.localStorage.getItem("atlas.sidebarContraido") === "1"; } catch { return false; }
+  });
   const [inventario, setInventario] = useState([]);
   const [errorInventario, setErrorInventario] = useState("");
   const [leads, setLeads] = useState([]);
@@ -812,6 +815,12 @@ export default function App() {
   const cotizacionesEmitidas = leads.filter((registro) => ["pendiente_respuesta", "aceptada_pendiente_pago", "venta_confirmada"].includes(registro.estado_flujo));
   const ingresosProyectados = 0;
 
+  const alternarSidebar = () => {
+    const contraido = !sidebarContraido;
+    setSidebarContraido(contraido);
+    try { window.localStorage.setItem("atlas.sidebarContraido", contraido ? "1" : "0"); } catch { /* El navegador puede bloquear el almacenamiento local. */ }
+  };
+
   const cerrarSesion = () => {
     fetch("/api/logout", { method: "POST", headers: { Authorization: `Bearer ${usuarioActual.token}` } }).catch(() => {});
     setUsuarioActual(null);
@@ -823,25 +832,40 @@ export default function App() {
   return (
     <div className="flex min-h-screen bg-slate-50">
       {/* Menú lateral (oculto al imprimir) */}
-      <aside className="w-64 bg-white border-r flex flex-col print:hidden">
-        <div className="p-5 border-b">
-          <p className="text-xl font-bold text-indigo-700">ATLAS CRM</p>
-          <div className="mt-2 bg-slate-100 p-2 rounded text-xs">
-            {usuarioActual.rol === "Cliente" ? (
-              <span className="font-bold text-slate-700">Prospecto</span>
-            ) : (
-              <><span className="font-bold text-slate-700">{usuarioActual.rol}</span><br/><span className="text-slate-500">{usuarioActual.nombre}</span></>
-            )}
+      <aside className={`${sidebarContraido ? "w-16" : "w-64"} shrink-0 bg-white border-r flex flex-col transition-[width] duration-200 print:hidden`}>
+        <div className={`border-b ${sidebarContraido ? "px-2 py-4" : "p-5"}`}>
+          <div className={`flex items-center ${sidebarContraido ? "flex-col gap-3" : "justify-between gap-2"}`}>
+            <p className="text-xl font-bold text-indigo-700" title={sidebarContraido ? "ATLAS CRM" : undefined}>{sidebarContraido ? "A" : "ATLAS CRM"}</p>
+            <button type="button" onClick={alternarSidebar} aria-expanded={!sidebarContraido} aria-label={sidebarContraido ? "Expandir menú" : "Contraer menú"} title={sidebarContraido ? "Expandir menú" : "Contraer menú"} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700">
+              <span aria-hidden="true" className="block text-sm leading-none">{sidebarContraido ? "»" : "«"}</span>
+            </button>
           </div>
+          {sidebarContraido ? (
+            <div className="mx-auto mt-3 flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-sm font-bold text-slate-700" title={usuarioActual.rol === "Cliente" ? "Prospecto" : `${usuarioActual.rol} · ${usuarioActual.nombre}`}>
+              {(usuarioActual.rol === "Cliente" ? "Prospecto" : usuarioActual.nombre || usuarioActual.rol).charAt(0).toUpperCase()}
+            </div>
+          ) : (
+            <div className="mt-2 bg-slate-100 p-2 rounded text-xs">
+              {usuarioActual.rol === "Cliente" ? (
+                <span className="font-bold text-slate-700">Prospecto</span>
+              ) : (
+                <><span className="font-bold text-slate-700">{usuarioActual.rol}</span><br/><span className="text-slate-500">{usuarioActual.nombre}</span></>
+              )}
+            </div>
+          )}
         </div>
-        <nav className="flex-1 p-3 space-y-1">
+        <nav className={`flex-1 space-y-1 ${sidebarContraido ? "p-2" : "p-3"}`}>
           {getNavItems().map((n) => (
-            <button key={n.key} onClick={() => setPagina(n.key)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${pagina === n.key ? "bg-indigo-50 text-indigo-700 font-bold" : "text-slate-600 hover:bg-slate-50"}`}>
-              <span className="text-lg">{n.icon}</span>{n.label}
+            <button key={n.key} onClick={() => setPagina(n.key)} aria-label={sidebarContraido ? n.label : undefined} aria-current={pagina === n.key ? "page" : undefined} className={`group relative w-full flex items-center rounded-lg text-sm text-left transition-colors ${sidebarContraido ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"} ${pagina === n.key ? "bg-indigo-50 text-indigo-700 font-bold" : "text-slate-600 hover:bg-slate-50"}`}>
+              <span className="text-lg" aria-hidden={sidebarContraido || undefined}>{n.icon}</span>{!sidebarContraido && n.label}
+              {sidebarContraido && <span aria-hidden="true" className="pointer-events-none absolute left-full z-40 ml-2 whitespace-nowrap rounded-md bg-slate-800 px-2 py-1 text-xs font-medium text-white opacity-0 shadow transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">{n.label}</span>}
             </button>
           ))}
         </nav>
-        <button onClick={cerrarSesion} className="m-4 py-2 border rounded-lg text-sm text-slate-600 hover:bg-slate-50 font-medium">Cerrar Sesión</button>
+        <button onClick={cerrarSesion} aria-label={sidebarContraido ? "Cerrar sesión" : undefined} className={`group relative border rounded-lg text-sm text-slate-600 hover:bg-slate-50 font-medium ${sidebarContraido ? "mx-2 my-4 py-2" : "m-4 py-2"}`}>
+          {sidebarContraido ? <span aria-hidden="true">🚪</span> : "Cerrar Sesión"}
+          {sidebarContraido && <span aria-hidden="true" className="pointer-events-none absolute left-full top-1/2 z-40 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-800 px-2 py-1 text-xs font-medium text-white opacity-0 shadow transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">Cerrar sesión</span>}
+        </button>
       </aside>
 
       {/* Contenedor principal */}
