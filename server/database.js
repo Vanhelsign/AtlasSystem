@@ -103,6 +103,13 @@ for (const [tabla, columnas] of [
     // Integración 6: copia de los supuestos de la estimación de ahorro al emitir la cotización.
     ['supuestos_ahorro', 'TEXT CHECK (supuestos_ahorro IS NULL OR json_valid(supuestos_ahorro))'],
   ]],
+  // Origen de cada precio de tarifa ('prueba' o 'recibo'). Los precios ya capturados quedan sin especificar (NULL).
+  ['tarifas_cfe', [
+    ['origen_cargo_fijo', "TEXT CHECK (origen_cargo_fijo IS NULL OR origen_cargo_fijo IN ('prueba', 'recibo'))"],
+  ]],
+  ['tarifas_bloques', [
+    ['origen_precio', "TEXT CHECK (origen_precio IS NULL OR origen_precio IN ('prueba', 'recibo'))"],
+  ]],
 ]) {
   const existentes = db.prepare(`PRAGMA table_info(${tabla})`).all()
   for (const [nombre, tipo] of columnas) {

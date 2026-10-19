@@ -882,7 +882,7 @@ function getTarifa(id) {
   const tarifa = db.prepare('SELECT * FROM tarifas_cfe WHERE id = ?').get(id)
   if (!tarifa) return null
   tarifa.bloques = db.prepare(`
-    SELECT temporada, orden, desde_kwh, hasta_kwh, precio_kwh FROM tarifas_bloques
+    SELECT temporada, orden, desde_kwh, hasta_kwh, precio_kwh, origen_precio FROM tarifas_bloques
     WHERE tarifa_id = ? ORDER BY temporada, orden
   `).all(id)
   tarifa.estados = db.prepare('SELECT estado_codigo FROM tarifas_estados WHERE tarifa_id = ? ORDER BY estado_codigo').all(id).map((fila) => fila.estado_codigo)
@@ -924,33 +924,54 @@ function validarTarifa(body, idActual = null) {
     if (!dac || tarifaDacId === idActual) throw new Error('La tarifa DAC asignada no es válida')
   }
   const cargoFijo = numeroOpcional(body.cargo_fijo_mensual, 'El cargo fijo mensual')
+  const origenCargoFijo = cargoFijo === null ? null : origenPrecio(body.origen_cargo_fijo, 'del cargo fijo')
   const vigencia = body.vigencia_desde ? String(body.vigencia_desde) : null
   if (vigencia && !/^\d{4}-\d{2}-\d{2}$/.test(vigencia)) throw new Error('La vigencia debe tener el formato AAAA-MM-DD')
   if (!Array.isArray(body.bloques)) throw new Error('Faltan los bloques de la tarifa')
-  const bloques = body.bloques.map((bloque) => ({
-    temporada: bloque.temporada,
-    orden: Number(bloque.orden),
-    desde_kwh: numeroOpcional(bloque.desde_kwh, 'El inicio del bloque') ?? 0,
-    hasta_kwh: numeroOpcional(bloque.hasta_kwh, 'El límite del bloque'),
-    precio_kwh: numeroOpcional(bloque.precio_kwh, 'El precio por kWh'),
-  }))
+  const bloques = body.bloques.map((bloque) => {
+    const precio = numeroOpcional(bloque.precio_kwh, 'El precio por kWh')
+    return {
+      temporada: bloque.temporada,
+      orden: Number(bloque.orden),
+      desde_kwh: numeroOpcional(bloque.desde_kwh, 'El inicio del bloque') ?? 0,
+      hasta_kwh: numeroOpcional(bloque.hasta_kwh, 'El límite del bloque'),
+      precio_kwh: precio,
+      // Un bloque sin precio no tiene origen.
+      origen_precio: precio === null ? null : origenPrecio(bloque.origen_precio, `del bloque ${bloque.orden}`),
+    }
+  })
   const errores = validarBloques(bloques)
   if (errores.length) throw new Error(errores.join('. '))
   const tarifa = {
     codigo, nombre, tipo, limite_dac_kwh: limiteDac, tarifa_dac_id: tarifaDacId, cargo_fijo_mensual: cargoFijo,
+    origen_cargo_fijo: origenCargoFijo,
     vigencia_desde: vigencia, activa: body.activa === false ? 0 : 1, pendiente_validar: body.pendiente_validar === false ? 0 : 1,
     notas: textoOpcional(body.notas, 'notas'), bloques,
   }
-  // Solo se puede marcar como validada una tarifa con todos sus precios capturados.
-  const faltantes = faltantesDeTarifa(tarifa)
-  if (!tarifa.pendiente_validar && faltantes.length) throw new Error(`No puedes marcarla como validada; falta: ${faltantes.join(', ')}`)
+  if (!tarifa.pendiente_validar) {
+    // Solo se marca como validada una tarifa con todos sus precios capturados y tomados de un recibo.
+    const faltantes = faltantesDeTarifa(tarifa)
+    if (faltantes.length) throw new Error(`No puedes marcarla como validada; falta: ${faltantes.join(', ')}`)
+    const etiquetas = { todo_el_anio: '', verano: ' (verano)', fuera_verano: ' (fuera de verano)' }
+    const noDeRecibo = [
+      ...(tarifa.origen_cargo_fijo === 'recibo' ? [] : ['cargo fijo']),
+      ...bloques.filter((bloque) => bloque.origen_precio !== 'recibo').map((bloque) => `bloque ${bloque.orden}${etiquetas[bloque.temporada]}`),
+    ]
+    if (noDeRecibo.length) throw new Error(`Solo puedes marcarla como validada si todos los precios se tomaron de un recibo; no lo están: ${noDeRecibo.join(', ')}`)
+  }
   return tarifa
+}
+
+function origenPrecio(valor, descripcion) {
+  if (valor === undefined || valor === null || valor === '') return null
+  if (!['prueba', 'recibo'].includes(valor)) throw new Error(`El origen del precio ${descripcion} debe ser "prueba" o "recibo"`)
+  return valor
 }
 
 function guardarBloques(tarifaId, bloques) {
   db.prepare('DELETE FROM tarifas_bloques WHERE tarifa_id = ?').run(tarifaId)
-  const insertar = db.prepare('INSERT INTO tarifas_bloques (tarifa_id, temporada, orden, desde_kwh, hasta_kwh, precio_kwh) VALUES (?, ?, ?, ?, ?, ?)')
-  for (const bloque of bloques) insertar.run(tarifaId, bloque.temporada, bloque.orden, bloque.desde_kwh, bloque.hasta_kwh, bloque.precio_kwh)
+  const insertar = db.prepare('INSERT INTO tarifas_bloques (tarifa_id, temporada, orden, desde_kwh, hasta_kwh, precio_kwh, origen_precio) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  for (const bloque of bloques) insertar.run(tarifaId, bloque.temporada, bloque.orden, bloque.desde_kwh, bloque.hasta_kwh, bloque.precio_kwh, bloque.origen_precio)
 }
 
 function respuestaConflicto(error, response) {
@@ -974,9 +995,9 @@ app.post('/api/tarifas', autenticar, permitirRoles('Administrador'), (request, r
     db.exec('BEGIN IMMEDIATE')
     try {
       const id = Number(db.prepare(`
-        INSERT INTO tarifas_cfe (codigo, nombre, tipo, limite_dac_kwh, tarifa_dac_id, cargo_fijo_mensual, vigencia_desde, activa, pendiente_validar, notas)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(tarifa.codigo, tarifa.nombre, tarifa.tipo, tarifa.limite_dac_kwh, tarifa.tarifa_dac_id, tarifa.cargo_fijo_mensual,
+        INSERT INTO tarifas_cfe (codigo, nombre, tipo, limite_dac_kwh, tarifa_dac_id, cargo_fijo_mensual, origen_cargo_fijo, vigencia_desde, activa, pendiente_validar, notas)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(tarifa.codigo, tarifa.nombre, tarifa.tipo, tarifa.limite_dac_kwh, tarifa.tarifa_dac_id, tarifa.cargo_fijo_mensual, tarifa.origen_cargo_fijo,
         tarifa.vigencia_desde, tarifa.activa, tarifa.pendiente_validar, tarifa.notas).lastInsertRowid)
       guardarBloques(id, tarifa.bloques)
       db.exec('COMMIT')
@@ -1008,10 +1029,10 @@ app.put('/api/tarifas/:id', autenticar, permitirRoles('Administrador'), (request
       // Las cotizaciones ya emitidas no cambian: guardan su propia copia en supuestos_ahorro.
       db.prepare(`
         UPDATE tarifas_cfe SET codigo = ?, nombre = ?, tipo = ?, limite_dac_kwh = ?, tarifa_dac_id = ?, cargo_fijo_mensual = ?,
-          vigencia_desde = ?, activa = ?, pendiente_validar = ?, notas = ?, updated_at = CURRENT_TIMESTAMP
+          origen_cargo_fijo = ?, vigencia_desde = ?, activa = ?, pendiente_validar = ?, notas = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(tarifa.codigo, tarifa.nombre, tarifa.tipo, tarifa.limite_dac_kwh, tarifa.tarifa_dac_id, tarifa.cargo_fijo_mensual,
-        tarifa.vigencia_desde, tarifa.activa, tarifa.pendiente_validar, tarifa.notas, id)
+        tarifa.origen_cargo_fijo, tarifa.vigencia_desde, tarifa.activa, tarifa.pendiente_validar, tarifa.notas, id)
       guardarBloques(id, tarifa.bloques)
       db.exec('COMMIT')
     } catch (error) {
@@ -1082,7 +1103,7 @@ app.put('/api/parametros-ahorro', autenticar, permitirRoles('Administrador'), (r
 
 const copiaTarifa = (tarifa) => tarifa && ({
   id: tarifa.id, codigo: tarifa.codigo, nombre: tarifa.nombre, tipo: tarifa.tipo, limite_dac_kwh: tarifa.limite_dac_kwh,
-  cargo_fijo_mensual: tarifa.cargo_fijo_mensual, vigencia_desde: tarifa.vigencia_desde,
+  cargo_fijo_mensual: tarifa.cargo_fijo_mensual, origen_cargo_fijo: tarifa.origen_cargo_fijo, vigencia_desde: tarifa.vigencia_desde,
   pendiente_validar: Boolean(tarifa.pendiente_validar), bloques: tarifa.bloques,
 })
 

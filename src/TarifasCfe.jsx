@@ -3,18 +3,11 @@ import { ESTADOS_MEXICO } from "../shared/estadosMexico.js";
 import { horasSolaresPico } from "../shared/irradiacion.js";
 import Aviso from "./Aviso.jsx";
 import Modal from "./Modal.jsx";
+import ModalTarifa from "./ModalTarifa.jsx";
+import { etiquetaOrigen, nombreBloque, TEMPORADAS, TIPOS_TARIFA } from "./tarifasComunes.js";
 import { BOTON_PELIGRO, BOTON_PRIMARIO, BOTON_SECUNDARIO, CAMPO, ETIQUETA, fmtCentavos, fmtNumero, plural } from "./ui.js";
 import useAviso from "./useAviso.js";
 
-const TIPOS_TARIFA = { domestica: "Doméstica", dac: "DAC (alto consumo)", comercial: "Comercial" };
-const TEMPORADAS = { todo_el_anio: "Todo el año", verano: "Verano", fuera_verano: "Fuera de verano" };
-const MAX_BLOQUES = 4;
-const NOMBRES_BLOQUES = {
-  1: ["Único"],
-  2: ["Básico", "Excedente"],
-  3: ["Básico", "Intermedio", "Excedente"],
-  4: ["Básico", "Intermedio", "Intermedio alto", "Excedente"],
-};
 const PARAMETROS = [
   ["eficiencia", "Eficiencia del sistema", "%", 100, "Pérdidas por temperatura, cableado, inversor y suciedad."],
   ["degradacion_anual", "Degradación anual de los paneles", "% por año", 100, "Reduce el ahorro de cada año respecto al anterior."],
@@ -22,9 +15,6 @@ const PARAMETROS = [
   ["iva", "IVA del recibo", "%", 100, "Se aplica a los precios por kWh y al cargo fijo, que se capturan sin IVA."],
   ["meses_verano", "Meses de verano", "meses", 1, "Pondera las tarifas que tienen bloques de verano y fuera de verano."],
 ];
-
-const nombreBloque = (indice, total) => NOMBRES_BLOQUES[total]?.[indice] ?? `Bloque ${indice + 1}`;
-const texto = (valor) => valor === null || valor === undefined ? "" : String(valor);
 
 function EtiquetaPendiente({ tarifa }) {
   if (!tarifa) return null;
@@ -187,7 +177,7 @@ export default function TarifasCfe({ token }) {
         </div>
       </section>
 
-      {modal?.tipo === "tarifa" && <ModalTarifa tarifa={modal.tarifa} tarifasDac={tarifasDac} onCerrar={() => setModal(null)} onGuardar={(cuerpo) => guardarTarifa(modal.tarifa, cuerpo)} />}
+      {modal?.tipo === "tarifa" && <ModalTarifa tarifa={modal.tarifa} tarifasDac={tarifasDac} iva={datos.parametros.iva} onCerrar={() => setModal(null)} onGuardar={(cuerpo) => guardarTarifa(modal.tarifa, cuerpo)} />}
       {modal?.tipo === "eliminar" && <ModalEliminarTarifa tarifa={modal.tarifa} onCerrar={() => setModal(null)} onConfirmar={() => eliminarTarifa(modal.tarifa)} />}
       {modal?.tipo === "parametros" && <ModalParametros parametros={datos.parametros} onCerrar={() => setModal(null)} onGuardar={guardarParametros} />}
     </div>
@@ -209,7 +199,7 @@ function TablaBloques({ bloques }) {
                   <tr key={bloque.orden}>
                     <td className="py-1 pr-2 text-slate-600">{nombreBloque(indice, lista.length)}</td>
                     <td className="py-1 pr-2 text-slate-600">{bloque.hasta_kwh === null ? `más de ${fmtNumero(bloque.desde_kwh)} kWh` : `${fmtNumero(bloque.desde_kwh)}–${fmtNumero(bloque.hasta_kwh)} kWh`}</td>
-                    <td className={`py-1 text-right font-medium ${bloque.precio_kwh === null ? "text-amber-700" : ""}`}>{bloque.precio_kwh === null ? "sin precio" : `${fmtCentavos(bloque.precio_kwh)}/kWh`}</td>
+                    <td className={`py-1 text-right font-medium ${bloque.precio_kwh === null ? "text-amber-700" : ""}`}>{bloque.precio_kwh === null ? "sin precio" : <>{fmtCentavos(bloque.precio_kwh)}/kWh <span className={`block text-[11px] font-normal ${bloque.origen_precio === "recibo" ? "text-green-700" : "text-amber-700"}`}>{etiquetaOrigen(bloque.origen_precio)}</span></>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -240,7 +230,7 @@ function TarjetaTarifa({ tarifa, dac, onEditar, onEliminar }) {
         </div>
       </div>
       <dl className="grid grid-cols-2 gap-2 text-xs">
-        <div><dt className="text-slate-500">Cargo fijo mensual</dt><dd className={`font-semibold ${tarifa.cargo_fijo_mensual === null ? "text-amber-700" : ""}`}>{tarifa.cargo_fijo_mensual === null ? "sin capturar" : fmtCentavos(tarifa.cargo_fijo_mensual)}</dd></div>
+        <div><dt className="text-slate-500">Cargo fijo mensual</dt><dd className={`font-semibold ${tarifa.cargo_fijo_mensual === null ? "text-amber-700" : ""}`}>{tarifa.cargo_fijo_mensual === null ? "sin capturar" : <>{fmtCentavos(tarifa.cargo_fijo_mensual)} <span className={`text-[11px] font-normal ${tarifa.origen_cargo_fijo === "recibo" ? "text-green-700" : "text-amber-700"}`}>({etiquetaOrigen(tarifa.origen_cargo_fijo)})</span></>}</dd></div>
         {tarifa.tipo === "domestica" && <div><dt className="text-slate-500">Límite DAC</dt><dd className="font-semibold">{tarifa.limite_dac_kwh ? `${fmtNumero(tarifa.limite_dac_kwh)} kWh/mes → ${dac?.codigo ?? "sin tarifa DAC"}` : "Sin límite"}</dd></div>}
         <div><dt className="text-slate-500">Vigencia desde</dt><dd className="font-semibold">{tarifa.vigencia_desde ?? "sin capturar"}</dd></div>
         <div><dt className="text-slate-500">Estados asignados</dt><dd className="font-semibold">{tarifa.estados.length}</dd></div>
@@ -248,156 +238,6 @@ function TarjetaTarifa({ tarifa, dac, onEditar, onEliminar }) {
       <TablaBloques bloques={tarifa.bloques} />
       {tarifa.notas && <p className="text-xs text-slate-500">{tarifa.notas}</p>}
     </article>
-  );
-}
-
-// Editor de bloques: solo se capturan el límite superior y el precio; el inicio es el límite del bloque anterior.
-function juegosIniciales(tarifa) {
-  const bloques = tarifa?.bloques?.length ? tarifa.bloques : [{ temporada: "todo_el_anio", orden: 1, desde_kwh: 0, hasta_kwh: null, precio_kwh: null }];
-  const juegos = {};
-  // Orden fijo de presentación: verano antes que fuera de verano.
-  for (const temporada of ["verano", "fuera_verano", "todo_el_anio"]) {
-    const lista = bloques.filter((bloque) => bloque.temporada === temporada).sort((a, b) => a.orden - b.orden);
-    if (lista.length) juegos[temporada] = lista.map((bloque) => ({ hasta: texto(bloque.hasta_kwh), precio: texto(bloque.precio_kwh) }));
-  }
-  return juegos;
-}
-
-function EditorBloques({ temporada, filas, onCambiar }) {
-  const cambiarFila = (indice, campo, valor) => onCambiar(filas.map((fila, i) => i === indice ? { ...fila, [campo]: valor } : fila));
-  // El bloque nuevo queda al final (abierto); el que era el último ahora necesita su límite superior.
-  const agregar = () => onCambiar([...filas, { hasta: "", precio: "" }]);
-  const quitar = (indice) => onCambiar(filas.filter((_, i) => i !== indice));
-  return (
-    <fieldset className="space-y-2 rounded-lg border p-3">
-      <legend className="px-1 text-sm font-semibold">{TEMPORADAS[temporada]}</legend>
-      {filas.map((fila, indice) => {
-        const ultimo = indice === filas.length - 1;
-        const desde = indice === 0 ? "0" : filas[indice - 1].hasta || "…";
-        const nombre = nombreBloque(indice, filas.length);
-        return (
-          <div key={indice} className="grid grid-cols-[1fr_auto] items-end gap-2 sm:grid-cols-[120px_1fr_1fr_auto]">
-            <p className="col-span-2 text-sm font-medium sm:col-span-1 sm:pb-2">{nombre}<span className="block text-xs font-normal text-slate-500">desde {desde} kWh</span></p>
-            <label className="text-xs">Hasta (kWh/mes)
-              {ultimo
-                ? <span className="mt-1 block rounded-lg border border-dashed bg-slate-50 px-3 py-2 text-sm text-slate-500">Sin límite</span>
-                : <input type="number" min="0" step="any" value={fila.hasta} onChange={(event) => cambiarFila(indice, "hasta", event.target.value)} aria-label={`Límite superior de ${nombre} (${TEMPORADAS[temporada]})`} className={CAMPO} />}
-            </label>
-            <label className="text-xs">Precio $/kWh sin IVA
-              <input type="number" min="0" step="any" value={fila.precio} onChange={(event) => cambiarFila(indice, "precio", event.target.value)} placeholder="Vacío = sin capturar" aria-label={`Precio de ${nombre} (${TEMPORADAS[temporada]})`} className={CAMPO} />
-            </label>
-            <button type="button" disabled={filas.length === 1} onClick={() => quitar(indice)} aria-label={`Quitar ${nombre}`} className="mb-1 rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-30">Quitar</button>
-          </div>
-        );
-      })}
-      <button type="button" disabled={filas.length >= MAX_BLOQUES} onClick={agregar} className="text-xs font-semibold text-indigo-700 hover:underline disabled:text-slate-400 disabled:no-underline">
-        {filas.length >= MAX_BLOQUES ? `Máximo ${MAX_BLOQUES} bloques` : "+ Agregar bloque"}
-      </button>
-    </fieldset>
-  );
-}
-
-function ModalTarifa({ tarifa, tarifasDac, onCerrar, onGuardar }) {
-  const editando = Boolean(tarifa);
-  const [form, setForm] = useState(() => ({
-    codigo: tarifa?.codigo ?? "",
-    nombre: tarifa?.nombre ?? "",
-    tipo: tarifa?.tipo ?? "domestica",
-    limite_dac_kwh: texto(tarifa?.limite_dac_kwh),
-    tarifa_dac_id: texto(tarifa?.tarifa_dac_id ?? (editando ? null : tarifasDac[0]?.id)),
-    cargo_fijo_mensual: texto(tarifa?.cargo_fijo_mensual),
-    vigencia_desde: tarifa?.vigencia_desde ?? "",
-    activa: tarifa ? Boolean(tarifa.activa) : true,
-    validada: tarifa ? !tarifa.pendiente_validar : false,
-    notas: tarifa?.notas ?? "",
-  }));
-  const [juegos, setJuegos] = useState(() => juegosIniciales(tarifa));
-  const [error, setError] = useState("");
-  const [ocupado, setOcupado] = useState(false);
-  const porTemporada = Boolean(juegos.verano || juegos.fuera_verano);
-  const cambiar = (campo) => (event) => setForm({ ...form, [campo]: event.target.type === "checkbox" ? event.target.checked : event.target.value });
-
-  const alternarTemporadas = (activar) => {
-    if (activar) {
-      const base = juegos.todo_el_anio ?? juegos.verano;
-      setJuegos({ verano: base, fuera_verano: base.map((fila) => ({ ...fila })) });
-    } else setJuegos({ todo_el_anio: juegos.verano ?? juegos.fuera_verano });
-  };
-
-  const guardar = async () => {
-    const bloques = Object.entries(juegos).flatMap(([temporada, filas]) => filas.map((fila, indice) => ({
-      temporada,
-      orden: indice + 1,
-      desde_kwh: indice === 0 ? 0 : filas[indice - 1].hasta,
-      hasta_kwh: indice === filas.length - 1 ? null : fila.hasta,
-      precio_kwh: fila.precio,
-    })));
-    const domestica = form.tipo === "domestica";
-    setError("");
-    setOcupado(true);
-    try {
-      await onGuardar({
-        codigo: form.codigo, nombre: form.nombre, tipo: form.tipo,
-        limite_dac_kwh: domestica ? form.limite_dac_kwh : null,
-        tarifa_dac_id: domestica ? form.tarifa_dac_id : null,
-        cargo_fijo_mensual: form.cargo_fijo_mensual, vigencia_desde: form.vigencia_desde,
-        activa: form.activa, pendiente_validar: !form.validada, notas: form.notas, bloques,
-      });
-    } catch (apiError) {
-      setError(apiError.datos?.estados ? `${apiError.message}: ${apiError.datos.estados.join(", ")}.` : apiError.message);
-      setOcupado(false);
-    }
-  };
-
-  return (
-    <Modal
-      titulo={editando ? `Editar tarifa ${tarifa.codigo}` : "Nueva tarifa"}
-      descripcion="Captura los valores tal como aparecen en un recibo de CFE, sin IVA. Los cambios no alteran cotizaciones ya emitidas."
-      error={error}
-      ocupado={ocupado}
-      onCerrar={onCerrar}
-      onEnviar={guardar}
-      ancho="max-w-3xl"
-      acciones={<>
-        <button type="button" onClick={onCerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
-        <button type="submit" disabled={ocupado} className={BOTON_PRIMARIO}>{ocupado ? "Guardando…" : editando ? "Guardar tarifa" : "Crear tarifa"}</button>
-      </>}
-    >
-      <div className="grid gap-4 sm:grid-cols-3">
-        <label className={ETIQUETA}>Código<input value={form.codigo} onChange={cambiar("codigo")} placeholder="Ej. 1C" className={CAMPO} /></label>
-        <label className={`${ETIQUETA} sm:col-span-2`}>Nombre<input value={form.nombre} onChange={cambiar("nombre")} className={CAMPO} /></label>
-        <label className={ETIQUETA}>Tipo
-          <select value={form.tipo} onChange={cambiar("tipo")} className={CAMPO}>{Object.entries(TIPOS_TARIFA).map(([valor, etiqueta]) => <option key={valor} value={valor}>{etiqueta}</option>)}</select>
-        </label>
-        <label className={ETIQUETA}>Cargo fijo mensual ($ sin IVA)<input type="number" min="0" step="any" value={form.cargo_fijo_mensual} onChange={cambiar("cargo_fijo_mensual")} placeholder="0 si no aplica" className={CAMPO} /></label>
-        <label className={ETIQUETA}>Vigente desde<input type="date" value={form.vigencia_desde} onChange={cambiar("vigencia_desde")} className={CAMPO} /></label>
-        {form.tipo === "domestica" && <>
-          <label className={ETIQUETA}>Límite DAC (kWh/mes)<input type="number" min="1" step="any" value={form.limite_dac_kwh} onChange={cambiar("limite_dac_kwh")} placeholder="Vacío = sin límite" className={CAMPO} /></label>
-          <label className={`${ETIQUETA} sm:col-span-2`}>Tarifa que aplica por encima del límite
-            <select value={form.tarifa_dac_id} onChange={cambiar("tarifa_dac_id")} className={CAMPO}>
-              <option value="">Sin tarifa DAC</option>
-              {tarifasDac.map((dac) => <option key={dac.id} value={dac.id}>{dac.codigo} · {dac.nombre}</option>)}
-            </select>
-          </label>
-        </>}
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-semibold">Bloques de consumo (máximo {MAX_BLOQUES} por temporada)</p>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={porTemporada} onChange={(event) => alternarTemporadas(event.target.checked)} />Bloques distintos en verano y fuera de verano</label>
-        </div>
-        <div className="grid gap-3">
-          {Object.entries(juegos).map(([temporada, filas]) => <EditorBloques key={temporada} temporada={temporada} filas={filas} onCambiar={(nuevas) => setJuegos({ ...juegos, [temporada]: nuevas })} />)}
-        </div>
-      </div>
-
-      <label className={ETIQUETA}>Notas<textarea rows={2} value={form.notas} onChange={cambiar("notas")} placeholder="Ej. Recibo de referencia y periodo" className={CAMPO} /></label>
-      <div className="flex flex-col gap-2 rounded-lg bg-slate-50 p-3 text-sm">
-        <label className="flex items-center gap-2"><input type="checkbox" checked={form.activa} onChange={cambiar("activa")} />Activa (disponible para asignar y emitir)</label>
-        <label className="flex items-center gap-2"><input type="checkbox" checked={form.validada} onChange={cambiar("validada")} />Validada con un recibo de CFE (requiere todos los precios y el cargo fijo)</label>
-      </div>
-    </Modal>
   );
 }
 

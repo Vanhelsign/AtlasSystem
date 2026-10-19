@@ -313,6 +313,7 @@ CREATE TABLE IF NOT EXISTS tarifas_cfe (
   limite_dac_kwh REAL CHECK (limite_dac_kwh IS NULL OR limite_dac_kwh > 0),
   tarifa_dac_id INTEGER REFERENCES tarifas_cfe(id) ON DELETE SET NULL,
   cargo_fijo_mensual REAL CHECK (cargo_fijo_mensual IS NULL OR cargo_fijo_mensual >= 0),
+  origen_cargo_fijo TEXT CHECK (origen_cargo_fijo IS NULL OR origen_cargo_fijo IN ('prueba', 'recibo')),
   vigencia_desde TEXT,
   activa INTEGER NOT NULL DEFAULT 1 CHECK (activa IN (0, 1)),
   pendiente_validar INTEGER NOT NULL DEFAULT 1 CHECK (pendiente_validar IN (0, 1)),
@@ -329,6 +330,8 @@ CREATE TABLE IF NOT EXISTS tarifas_bloques (
   desde_kwh REAL NOT NULL CHECK (desde_kwh >= 0),
   hasta_kwh REAL CHECK (hasta_kwh IS NULL OR hasta_kwh > desde_kwh),
   precio_kwh REAL CHECK (precio_kwh IS NULL OR precio_kwh >= 0),
+  -- Origen del precio: 'prueba' (dato de prueba) o 'recibo' (tomado de un recibo); NULL = sin especificar.
+  origen_precio TEXT CHECK (origen_precio IS NULL OR origen_precio IN ('prueba', 'recibo')),
   UNIQUE (tarifa_id, temporada, orden),
   FOREIGN KEY (tarifa_id) REFERENCES tarifas_cfe(id) ON DELETE CASCADE
 );
