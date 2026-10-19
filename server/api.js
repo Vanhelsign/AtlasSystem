@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import process from 'node:process'
 import express from 'express'
@@ -15,6 +15,8 @@ const codigosEstado = new Set(ESTADOS_MEXICO.map((estado) => estado.codigo))
 const tiposProducto = new Set(['Panel', 'Inversor', 'Estructura', 'Cableado', 'Mano de obra', 'Batería', 'Extra'])
 const sesiones = new Map()
 
+// La importación de inventario envía hasta 2000 filas; se registra antes del límite general para que este la omita.
+app.use('/api/productos/importacion', express.json({ limit: '2mb' }))
 app.use(express.json({ limit: '100kb' }))
 
 function textoOpcional(value, campo) {
@@ -531,6 +533,245 @@ app.patch('/api/productos/:id/activo', autenticar, permitirRoles('Administrador'
   } catch (error) {
     response.status(400).json({ error: error.message })
   }
+})
+
+// Importación masiva del catálogo. El navegador lee el CSV o Excel y envía cada celda como texto;
+// aquí se interpreta, se valida con las mismas reglas de validarProducto y se compara con el catálogo.
+const LIMITE_FILAS_IMPORTACION = 2000
+const columnasImportacionObligatorias = ['codigo', 'clase', 'tipo', 'modelo', 'costo', 'existencias', 'estado']
+const camposImportacion = ['tipo', 'modelo', 'clasificacion', 'costo_unitario', 'existencias', 'marca', 'capacidad_kwh', 'potencia_w', 'potencia_kw', 'activo']
+
+const claveImportacion = (valor) => String(valor).normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()
+const tiposPorClave = new Map([...tiposProducto].map((tipo) => [claveImportacion(tipo), tipo]))
+const clasesPorClave = new Map([['material', 'material'], ['material fisico', 'material'], ['servicio', 'servicio']])
+
+function numeroImportacion(texto, campo) {
+  let limpio = texto.replace(/[$\s]/g, '')
+  if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(limpio)) limpio = limpio.replaceAll(',', '')
+  if (!/^-?\d+(\.\d+)?$/.test(limpio)) throw new Error(`${campo} debe ser numérico`)
+  return Number(limpio)
+}
+
+function leerSolicitudImportacion(body) {
+  const archivo = textoRequerido(body?.archivo, 'nombre del archivo').slice(0, 200)
+  if (!Array.isArray(body.columnas)) throw new Error('Faltan las columnas del archivo')
+  const faltantes = columnasImportacionObligatorias.filter((columna) => !body.columnas.includes(columna))
+  if (faltantes.length) throw new Error(`Faltan columnas obligatorias: ${faltantes.join(', ')}`)
+  const filas = body.filas
+  if (!Array.isArray(filas) || !filas.length) throw new Error('El archivo no contiene filas para importar')
+  if (filas.length > LIMITE_FILAS_IMPORTACION) throw new Error(`El archivo supera el límite de ${LIMITE_FILAS_IMPORTACION} filas`)
+  if (filas.some((fila) => !fila || typeof fila !== 'object' || Array.isArray(fila))) throw new Error('Formato de filas no válido')
+  return { archivo, filas }
+}
+
+function planificarFilaImportacion(entrada, indice, actualPorCodigo, filasPorCodigo, archivo) {
+  const errores = []
+  const numeroFila = Number.isInteger(entrada.fila) && entrada.fila > 0 ? entrada.fila : indice + 2
+  const celda = (campo) => {
+    const valor = entrada[campo]
+    if (valor === undefined || valor === null) return null
+    if (typeof valor !== 'string' && typeof valor !== 'number') {
+      errores.push(`${campo} contiene un valor no válido`)
+      return null
+    }
+    return String(valor).trim() || null
+  }
+  const numero = (campo, etiqueta) => {
+    const texto = celda(campo)
+    if (texto === null) return null
+    try { return numeroImportacion(texto, etiqueta) } catch (error) { errores.push(error.message); return null }
+  }
+
+  const codigo = celda('codigo')
+  const textoTipo = celda('tipo')
+  const modelo = celda('modelo')
+  const textoClase = celda('clase')
+  const textoExistencias = celda('existencias')
+  const textoEstado = celda('estado')
+  const costo = numero('costo', 'costo')
+  const marca = celda('marca')
+  const capacidadKwh = numero('capacidad_kwh', 'capacidad_kwh')
+  const potenciaW = numero('potencia_w', 'potencia_w')
+  const potenciaKw = numero('potencia_kw', 'potencia_kw')
+
+  if (!codigo) errores.push('código es obligatorio')
+  else if (codigo.length > 60) errores.push('código no debe superar 60 caracteres')
+  else if (filasPorCodigo.get(codigo.toLowerCase()).length > 1) {
+    errores.push(`código repetido en el archivo (filas ${filasPorCodigo.get(codigo.toLowerCase()).join(', ')})`)
+  }
+  const tipo = textoTipo ? tiposPorClave.get(claveImportacion(textoTipo)) : null
+  if (!textoTipo) errores.push('tipo es obligatorio')
+  else if (!tipo) errores.push(`tipo "${textoTipo}" no es válido`)
+  if (!modelo) errores.push('modelo es obligatorio')
+  const clasificacion = textoClase ? clasesPorClave.get(claveImportacion(textoClase)) : null
+  if (!textoClase) errores.push('clase es obligatoria')
+  else if (!clasificacion) errores.push('clase debe ser material o servicio')
+  if (costo === null && !errores.some((error) => error.startsWith('costo'))) errores.push('costo es obligatorio')
+
+  let existencias = null
+  if (clasificacion === 'servicio') {
+    if (textoExistencias !== null && claveImportacion(textoExistencias) !== 'no aplica') errores.push('los servicios no manejan existencias')
+  } else if (clasificacion === 'material') {
+    if (textoExistencias === null) errores.push('existencias es obligatorio para materiales')
+    else {
+      try {
+        existencias = numeroImportacion(textoExistencias, 'existencias')
+        if (!Number.isInteger(existencias) || existencias < 0) errores.push('existencias debe ser un entero no negativo')
+      } catch (error) { errores.push(error.message) }
+    }
+  }
+
+  const clavesEstado = { activo: 1, inactivo: 0 }
+  const activo = textoEstado ? clavesEstado[claveImportacion(textoEstado)] : undefined
+  if (!textoEstado) errores.push('estado es obligatorio')
+  else if (activo === undefined) errores.push('estado debe ser Activo o Inactivo')
+
+  const actual = codigo ? actualPorCodigo.get(codigo.toLowerCase()) : undefined
+  const base = {
+    fila: numeroFila,
+    codigo: actual?.codigo ?? codigo,
+    tipo: tipo ?? textoTipo,
+    modelo,
+    clasificacion: clasificacion ?? textoClase,
+    costo_unitario: costo,
+    existencias: clasificacion === 'material' ? existencias ?? textoExistencias : null,
+  }
+  if (errores.length) return { ...base, accion: 'invalida', errores, cambios: [] }
+
+  // Las celdas vacías u omitidas llegan como undefined: validarProducto conserva el valor actual.
+  let producto
+  try {
+    producto = validarProducto({
+      tipo, modelo, clasificacion, costo_unitario: costo, existencias,
+      marca: marca ?? undefined,
+      capacidad_kwh: capacidadKwh ?? undefined,
+      potencia_w: potenciaW ?? undefined,
+      potencia_kw: potenciaKw ?? undefined,
+    }, actual ?? {})
+  } catch (error) {
+    return { ...base, accion: 'invalida', errores: [error.message], cambios: [] }
+  }
+
+  const resultado = {
+    tipo: producto.tipo,
+    modelo: producto.modelo,
+    clasificacion: producto.clasificacion,
+    costo_unitario: producto.costoUnitario,
+    existencias: producto.existencias,
+    marca: producto.marca,
+    capacidad_kwh: producto.capacidadKwh,
+    potencia_w: producto.potenciaW,
+    potencia_kw: producto.potenciaKw,
+    activo,
+    proveedor_id: producto.proveedorId,
+  }
+  if (!actual) {
+    return {
+      ...base, ...resultado, accion: 'nuevo', errores: [], cambios: [],
+      motivo_baja: activo ? null : `Baja por importación de ${archivo}`,
+    }
+  }
+
+  const cambios = camposImportacion
+    .filter((campo) => (actual[campo] ?? null) !== (resultado[campo] ?? null))
+    .map((campo) => ({ campo, antes: actual[campo] ?? null, despues: resultado[campo] ?? null }))
+  let motivoBaja = actual.motivo_baja
+  if (actual.activo && !activo) motivoBaja = `Baja por importación de ${archivo}`
+  if (!actual.activo && activo) motivoBaja = null
+  return {
+    ...base, ...resultado, id: actual.id, accion: cambios.length ? 'actualizar' : 'sin_cambios',
+    errores: [], cambios, motivo_baja: motivoBaja, actualizado_en: actual.updated_at,
+  }
+}
+
+function planificarImportacion({ archivo, filas }) {
+  const productos = db.prepare(productoSelect).all()
+  const actualPorCodigo = new Map(productos.map((producto) => [producto.codigo.toLowerCase(), producto]))
+  const filasPorCodigo = new Map()
+  filas.forEach((entrada, indice) => {
+    const codigo = typeof entrada.codigo === 'string' || typeof entrada.codigo === 'number' ? String(entrada.codigo).trim().toLowerCase() : ''
+    if (!codigo) return
+    const numeroFila = Number.isInteger(entrada.fila) && entrada.fila > 0 ? entrada.fila : indice + 2
+    filasPorCodigo.set(codigo, [...(filasPorCodigo.get(codigo) ?? []), numeroFila])
+  })
+  const plan = filas.map((entrada, indice) => planificarFilaImportacion(entrada, indice, actualPorCodigo, filasPorCodigo, archivo))
+  const resumen = { nuevos: 0, actualizar: 0, sin_cambios: 0, invalidas: 0 }
+  for (const fila of plan) resumen[fila.accion === 'nuevo' ? 'nuevos' : fila.accion === 'invalida' ? 'invalidas' : fila.accion] += 1
+  // La firma resume el plan y el estado de los productos afectados; si cambia antes de confirmar, se rechaza.
+  const firma = createHash('sha256').update(JSON.stringify(plan)).digest('hex')
+  return { archivo, filas: plan, resumen, firma }
+}
+
+app.post('/api/productos/importacion/previsualizar', autenticar, permitirRoles('Administrador'), (request, response) => {
+  try {
+    response.json(planificarImportacion(leerSolicitudImportacion(request.body)))
+  } catch (error) {
+    response.status(400).json({ error: error.message })
+  }
+})
+
+app.post('/api/productos/importacion/confirmar', autenticar, permitirRoles('Administrador'), (request, response) => {
+  let solicitud
+  try {
+    solicitud = leerSolicitudImportacion(request.body)
+    if (typeof request.body.firma !== 'string') throw new Error('Falta la revisión previa del archivo')
+  } catch (error) {
+    return response.status(400).json({ error: error.message })
+  }
+
+  db.exec('BEGIN IMMEDIATE')
+  let transaccionAbierta = true
+  let plan
+  try {
+    plan = planificarImportacion(solicitud)
+    if (plan.firma !== request.body.firma) {
+      transaccionAbierta = false
+      db.exec('ROLLBACK')
+      return response.status(409).json({
+        error: 'El catálogo o el archivo cambiaron desde la revisión. Revisa de nuevo antes de confirmar.',
+        revision: plan,
+      })
+    }
+    const insertar = db.prepare(`
+      INSERT INTO productos_catalogo (
+        codigo, tipo, modelo, marca, proveedor_id, costo_unitario, clasificacion,
+        existencias, potencia_w, potencia_kw, capacidad_kwh, activo, motivo_baja
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const actualizar = db.prepare(`
+      UPDATE productos_catalogo
+      SET tipo = ?, modelo = ?, marca = ?, costo_unitario = ?, clasificacion = ?, existencias = ?,
+          potencia_w = ?, potencia_kw = ?, capacidad_kwh = ?, activo = ?, motivo_baja = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `)
+    for (const fila of plan.filas) {
+      if (fila.accion === 'nuevo') {
+        insertar.run(
+          fila.codigo, fila.tipo, fila.modelo, fila.marca, fila.proveedor_id, fila.costo_unitario, fila.clasificacion,
+          fila.existencias, fila.potencia_w, fila.potencia_kw, fila.capacidad_kwh, fila.activo, fila.motivo_baja,
+        )
+      } else if (fila.accion === 'actualizar') {
+        actualizar.run(
+          fila.tipo, fila.modelo, fila.marca, fila.costo_unitario, fila.clasificacion, fila.existencias,
+          fila.potencia_w, fila.potencia_kw, fila.capacidad_kwh, fila.activo, fila.motivo_baja, fila.id,
+        )
+      }
+    }
+    db.exec('COMMIT')
+    transaccionAbierta = false
+  } catch (error) {
+    if (transaccionAbierta) db.exec('ROLLBACK')
+    console.error(error)
+    return response.status(500).json({ error: `No se aplicó ningún cambio del archivo: ${error.message}` })
+  }
+
+  response.json({
+    agregados: plan.resumen.nuevos,
+    actualizados: plan.resumen.actualizar,
+    omitidos: plan.resumen.sin_cambios + plan.resumen.invalidas,
+    productos: db.prepare(`${productoSelect} ORDER BY id`).all(),
+  })
 })
 
 app.get('/api/proveedores', autenticar, permitirRoles('Administrador', 'Agente', 'Técnico'), (request, response) => {
@@ -1187,6 +1428,9 @@ app.put('/api/prospectos/:id/consumo', (request, response) => {
 
 app.use((error, _request, response, next) => {
   void next
+  if (error.type === 'entity.too.large') {
+    return response.status(413).json({ error: 'El contenido enviado supera el tamaño permitido' })
+  }
   console.error(error)
   response.status(500).json({ error: 'Error interno del servidor' })
 })

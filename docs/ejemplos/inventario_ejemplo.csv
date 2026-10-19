@@ -1,0 +1,7 @@
+﻿código,clase,tipo,modelo,costo,existencias,estado,marca,capacidad_kwh,potencia_w,potencia_kw
+PANEL-JA-550,material,Panel,JA Solar 550W Mono,3200,80,Activo,,,,
+INV-GROWATT-5KW,material,Inversor,Growatt 5kW String,15200,12,Activo,Growatt,,,
+BAT-PYL-US5000,material,Batería,Pylontech US5000,28000,4,Activo,Pylontech,4.8,,
+EXT-MEDIDOR-BID,material,Extra,Medidor bidireccional,1500,10,Activo,,,,
+0042,servicio,Mano de obra,Gestoría de interconexión CFE,2500,No aplica,Activo,,,,
+EXT-TURBINA,material,Turbina,Aerogenerador 1 kW,abc,3,Activo,,,,
