@@ -265,6 +265,13 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
     if (conservaEtapaTecnica && registro.revision_tecnica_estado === "en_revision") return "en_revision_tecnica";
     return registro.estado_flujo || "pendiente_revision_tecnica";
   };
+  // El estado geográfico se muestra con su nombre oficial a partir del código, no con el texto capturado.
+  const direccionInstalacion = (registro) => {
+    if (!registro.direccion_calle) return "No registrada";
+    const estado = nombreEstadoMexico(registro.direccion_estado_codigo) ?? `${registro.direccion_estado} (estado no reconocido)`;
+    const numero = `${registro.direccion_numero_exterior}${registro.direccion_numero_interior ? ` int. ${registro.direccion_numero_interior}` : ""}`;
+    return `${registro.direccion_calle} ${numero}, Col. ${registro.direccion_colonia}, C.P. ${registro.direccion_codigo_postal}, ${registro.direccion_municipio}, ${estado}`;
+  };
   const fechaSolicitud = (valor) => valor
     ? new Date(`${valor.replace(" ", "T")}Z`).toLocaleString("es-MX")
     : "No registrada";
@@ -389,7 +396,8 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
           {mensajeDetalle && <p className="mt-4 rounded-lg bg-green-50 p-3 text-sm text-green-700">{mensajeDetalle}</p>}
           <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
             <div><dt className="text-slate-500">Prospecto</dt><dd className="font-semibold">{registroDetalle.nombre}</dd></div>
-            <div><dt className="text-slate-500">Estado</dt><dd className="font-semibold">{ESTADOS_SOLICITUD[estadoDe(registroDetalle)]}</dd></div>
+            <div><dt className="text-slate-500">Estatus</dt><dd className="font-semibold">{ESTADOS_SOLICITUD[estadoDe(registroDetalle)]}</dd></div>
+            <div className="sm:col-span-2"><dt className="text-slate-500">Dirección de instalación</dt><dd className="font-semibold">{direccionInstalacion(registroDetalle)}</dd></div>
             <div><dt className="text-slate-500">Modalidad</dt><dd className="font-semibold">{registroDetalle.modalidad === "electrodomesticos" ? "Por electrodomésticos" : registroDetalle.modalidad === "historial_cfe" ? "Historial CFE" : "No registrada"}</dd></div>
             <div><dt className="text-slate-500">Consumo registrado</dt><dd className="font-semibold">{consumoVisible(registroDetalle)}</dd></div>
             <div><dt className="text-slate-500">Consumo objetivo</dt><dd className="font-semibold">{mostrarNumero(registroDetalle.consumo_objetivo_kwh, " kWh/mes")}</dd></div>

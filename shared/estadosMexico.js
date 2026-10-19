@@ -54,8 +54,19 @@ estadosPorValor.set('veracruz de ignacio de la llave', 'MX-VER')
 estadosPorValor.set('edomex', 'MX-MEX')
 estadosPorValor.set('queretaro de arteaga', 'MX-QUE')
 
+// Abreviaturas sin ambigüedad. Se comparan sin puntos ni espacios, por lo que "N.L.", "N. L.", "n l" y "NL"
+// coinciden. "México" a secas no se incluye: puede ser el país o el Estado de México.
+const abreviaturas = new Map([
+  ['nl', 'MX-NLE'],
+  ['cdmx', 'MX-CMX'],
+  ['df', 'MX-CMX'],
+  ['edomex', 'MX-MEX'],
+])
+const sinPuntuacion = (clave) => clave.replace(/[.\s]/g, '')
+
 export function normalizarEstadoMexico(valor) {
-  return estadosPorValor.get(claveTexto(valor)) ?? null
+  const clave = claveTexto(valor)
+  return estadosPorValor.get(clave) ?? abreviaturas.get(sinPuntuacion(clave)) ?? null
 }
 
 export function nombreEstadoMexico(codigo) {

@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer'
 import process from 'node:process'
 import express from 'express'
 import { db, getProspecto, prospectSelect } from './database.js'
-import { ESTADOS_MEXICO, normalizarEstadoMexico } from '../shared/estadosMexico.js'
+import { ESTADOS_MEXICO, nombreEstadoMexico, normalizarEstadoMexico } from '../shared/estadosMexico.js'
 import { estimarAhorro, faltantesDeTarifa, kwpDePaneles, PARAMETROS_POR_DEFECTO, validarBloques } from '../shared/ahorroSolar.js'
 import { horasSolaresPico } from '../shared/irradiacion.js'
 
@@ -216,7 +216,13 @@ function validarDireccion(value) {
     numeroInterior: textoOpcional(value.numero_interior, 'número interior'),
   }
   if (!/^\d{5}$/.test(direccion.codigoPostal)) throw new Error('código postal debe contener 5 dígitos')
+  // Sin un estado reconocido la solicitud no se podría asignar a ningún técnico: se rechaza en lugar de guardar NULL.
   const estadoCodigo = normalizarEstadoMexico(direccion.estado)
+  if (!estadoCodigo) {
+    throw new Error(`El estado "${direccion.estado}" no se reconoce. Selecciona uno de los 32 estados de México`)
+  }
+  // Se guarda el nombre oficial para que la dirección no dependa de cómo se escribió.
+  direccion.estado = nombreEstadoMexico(estadoCodigo)
   const ciudadCalculo = [...ciudades].find((ciudad) => ciudad.toLocaleLowerCase('es-MX') === direccion.municipio.toLocaleLowerCase('es-MX')) ?? 'Otra'
   return { ...direccion, estadoCodigo, ciudadCalculo }
 }

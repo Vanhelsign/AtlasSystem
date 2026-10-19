@@ -41,14 +41,37 @@ for (const cuenta of db.prepare(`
   if (codigo) actualizarEstadoPersonal.run(codigo, cuenta.id)
 }
 
-const actualizarEstadoDireccion = db.prepare('UPDATE direcciones_cliente SET estado_codigo = ? WHERE prospecto_id = ?')
-for (const direccion of db.prepare(`
-  SELECT prospecto_id, estado
-  FROM direcciones_cliente
-  WHERE estado_codigo IS NULL
-`).all()) {
-  const codigo = normalizarEstadoMexico(direccion.estado)
-  if (codigo) actualizarEstadoDireccion.run(codigo, direccion.prospecto_id)
+// Corrige las direcciones sin estado_codigo cuyo texto ahora sí se reconoce (por ejemplo "N.L.").
+// Es idempotente y corre en cada arranque. No inventa datos: el texto original se conserva y, si no se
+// reconoce, estado_codigo sigue en NULL y la fila se reporta para corregirla a mano.
+{
+  const actualizarEstadoDireccion = db.prepare('UPDATE direcciones_cliente SET estado_codigo = ?, updated_at = CURRENT_TIMESTAMP WHERE prospecto_id = ? AND estado_codigo IS NULL')
+  const sinCodigo = db.prepare(`
+    SELECT d.prospecto_id, d.estado, p.nombre
+    FROM direcciones_cliente d
+    JOIN prospectos p ON p.id = d.prospecto_id
+    WHERE d.estado_codigo IS NULL
+    ORDER BY d.prospecto_id
+  `).all()
+  const pendientes = []
+  let corregidas = 0
+  db.exec('BEGIN')
+  try {
+    for (const direccion of sinCodigo) {
+      const codigo = normalizarEstadoMexico(direccion.estado)
+      if (codigo) corregidas += actualizarEstadoDireccion.run(codigo, direccion.prospecto_id).changes
+      else pendientes.push(direccion)
+    }
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+  if (corregidas) console.log(`Direcciones corregidas con estado reconocido: ${corregidas}`)
+  if (pendientes.length) {
+    console.warn(`Direcciones con un estado que no se reconoce (ningún técnico las verá hasta corregirlas): ${pendientes
+      .map((direccion) => `prospecto ${direccion.prospecto_id} (${direccion.nombre}): "${direccion.estado}"`).join('; ')}`)
+  }
 }
 
 const columnasSolicitud = db.prepare('PRAGMA table_info(solicitudes_cotizacion)').all()

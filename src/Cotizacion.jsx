@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ESTADOS_MEXICO } from '../shared/estadosMexico.js'
 
 const POTENCIAS_APROXIMADAS = {
   'Refrigerador': 150,
@@ -298,8 +299,11 @@ export default function Cotizacion({ errorApi, onRegistrar }) {
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <label className="text-sm font-medium">Estado
-            <input value={direccion.estado} onChange={(event) => setDireccion({ ...direccion, estado: event.target.value })} className="mt-1 w-full border rounded-lg px-3 py-2 font-normal" />
-            <span className="block mt-1 text-xs font-normal text-slate-400">Ej. Nuevo León</span>
+            <select value={direccion.estado} onChange={(event) => setDireccion({ ...direccion, estado: event.target.value })} className="mt-1 w-full border rounded-lg bg-white px-3 py-2 font-normal">
+              <option value="">Selecciona un estado</option>
+              {ESTADOS_MEXICO.map((estado) => <option key={estado.codigo} value={estado.nombre}>{estado.nombre}</option>)}
+            </select>
+            <span className="block mt-1 text-xs font-normal text-slate-400">Define qué técnicos pueden atender la solicitud.</span>
           </label>
           <label className="text-sm font-medium">Ciudad o municipio
             <input value={direccion.municipio} onChange={(event) => setDireccion({ ...direccion, municipio: event.target.value })} className="mt-1 w-full border rounded-lg px-3 py-2 font-normal" />
