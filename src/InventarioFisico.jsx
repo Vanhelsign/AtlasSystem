@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import Aviso from "./Aviso.jsx";
 import Modal from "./Modal.jsx";
 import {
   generarCsvInventario,
@@ -7,14 +8,10 @@ import {
   leerArchivoInventario,
   LIMITE_FILAS_IMPORTACION,
 } from "./inventarioArchivos.js";
+import { BOTON_PELIGRO, BOTON_PRIMARIO, BOTON_SECUNDARIO, CAMPO, ETIQUETA, fmt, plural } from "./ui.js";
+import useAviso from "./useAviso.js";
 
-const fmt = (n) => new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 0 }).format(n);
 const TIPOS = ["Panel", "Inversor", "Estructura", "Cableado", "Mano de obra", "Batería", "Extra"];
-const BOTON_PRIMARIO = "rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50";
-const BOTON_SECUNDARIO = "rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50";
-const BOTON_PELIGRO = "rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50";
-const ETIQUETA = "block text-sm font-medium";
-const CAMPO = "mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm font-normal";
 const RESULTADOS = {
   nuevo: ["Nuevo", "bg-indigo-50 text-indigo-700"],
   actualizar: ["Actualizar", "bg-green-50 text-green-700"],
@@ -26,13 +23,12 @@ const NOMBRES_CAMPO = {
   marca: "Marca", capacidad_kwh: "Capacidad (kWh)", potencia_w: "Potencia (W)", potencia_kw: "Potencia (kW)", activo: "Estado",
 };
 
-const plural = (n, singular, varios) => `${n} ${n === 1 ? singular : varios}`;
 const tamanoLegible = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 const fechaArchivo = () => {
   const hoy = new Date();
   return `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-${String(hoy.getDate()).padStart(2, "0")}`;
 };
-const claveBusqueda = (valor) => String(valor ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+const claveBusqueda = (valor) => String(valor ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 // SQLite guarda CURRENT_TIMESTAMP en UTC con el formato "AAAA-MM-DD HH:MM:SS".
 const fechaAlta = (valor) => valor ? new Date(`${valor.replace(" ", "T")}Z`).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 const COLUMNAS_FILA = [
@@ -63,18 +59,6 @@ function detalleTecnico(producto, nombreProveedor) {
     producto.potencia_kw ? `${producto.potencia_kw} kW` : null,
     producto.capacidad_kwh ? `${producto.capacidad_kwh} kWh` : null,
   ].filter(Boolean).join(" · ");
-}
-
-// Avisos dentro de la página que desaparecen solos.
-function useAviso() {
-  const [aviso, setAviso] = useState(null);
-  useEffect(() => {
-    if (!aviso) return;
-    const temporizador = setTimeout(() => setAviso(null), aviso.tipo === "error" ? 8000 : 4500);
-    return () => clearTimeout(temporizador);
-  }, [aviso]);
-  const avisar = useCallback((tipo, texto) => setAviso({ tipo, texto, id: Date.now() }), []);
-  return [aviso, avisar, () => setAviso(null)];
 }
 
 export default function InventarioFisico({ inventario, setInventario, usuario }) {
@@ -289,12 +273,7 @@ export default function InventarioFisico({ inventario, setInventario, usuario })
         <span className="shrink-0 rounded bg-indigo-50 px-2 py-1 text-xs font-semibold text-indigo-700">{etapa}</span>
       </div>
 
-      {aviso && (
-        <div key={aviso.id} role={aviso.tipo === "error" ? "alert" : "status"} className={`flex items-start justify-between gap-3 rounded-lg p-3 text-sm ${aviso.tipo === "error" ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}>
-          <span>{aviso.texto}</span>
-          <button type="button" onClick={cerrarAviso} aria-label="Cerrar aviso" className="leading-none opacity-60 hover:opacity-100">✕</button>
-        </div>
-      )}
+      <Aviso aviso={aviso} onCerrar={cerrarAviso} />
 
       <input ref={selectorArchivo} type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="hidden" onChange={seleccionarArchivo} />
 

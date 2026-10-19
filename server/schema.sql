@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS cotizaciones_versiones (
   precio_venta REAL NOT NULL CHECK (precio_venta > 0),
   ahorro_anual_est REAL CHECK (ahorro_anual_est IS NULL OR ahorro_anual_est >= 0),
   retorno_inversion_anios REAL CHECK (retorno_inversion_anios IS NULL OR retorno_inversion_anios >= 0),
+  supuestos_ahorro TEXT CHECK (supuestos_ahorro IS NULL OR json_valid(supuestos_ahorro)),
   estado TEXT NOT NULL DEFAULT 'enviada' CHECK (estado IN ('enviada')),
   estatus_respuesta TEXT NOT NULL DEFAULT 'pendiente' CHECK (estatus_respuesta IN (
     'pendiente', 'aprobada', 'rechazada', 'pago_vencido'
@@ -301,3 +302,50 @@ CREATE INDEX IF NOT EXISTS ordenes_tecnico_idx ON ordenes_instalacion(tecnico_id
 CREATE INDEX IF NOT EXISTS checklist_orden_idx ON checklist_evidencias(orden_id);
 CREATE INDEX IF NOT EXISTS mantenimientos_fecha_idx ON mantenimientos_programados(estatus, fecha_limite);
 CREATE INDEX IF NOT EXISTS notificaciones_prospecto_idx ON registro_notificaciones(prospecto_id, created_at);
+
+-- Integración 6: tarifas CFE por bloques y parámetros para estimar ahorro y retorno de inversión.
+-- Los precios se guardan sin IVA. Un precio o cargo fijo vacío (NULL) significa "todavía no capturado".
+CREATE TABLE IF NOT EXISTS tarifas_cfe (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  codigo TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (length(trim(codigo)) > 0),
+  nombre TEXT NOT NULL CHECK (length(trim(nombre)) > 0),
+  tipo TEXT NOT NULL CHECK (tipo IN ('domestica', 'dac', 'comercial')),
+  limite_dac_kwh REAL CHECK (limite_dac_kwh IS NULL OR limite_dac_kwh > 0),
+  tarifa_dac_id INTEGER REFERENCES tarifas_cfe(id) ON DELETE SET NULL,
+  cargo_fijo_mensual REAL CHECK (cargo_fijo_mensual IS NULL OR cargo_fijo_mensual >= 0),
+  vigencia_desde TEXT,
+  activa INTEGER NOT NULL DEFAULT 1 CHECK (activa IN (0, 1)),
+  pendiente_validar INTEGER NOT NULL DEFAULT 1 CHECK (pendiente_validar IN (0, 1)),
+  notas TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tarifas_bloques (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tarifa_id INTEGER NOT NULL,
+  temporada TEXT NOT NULL DEFAULT 'todo_el_anio' CHECK (temporada IN ('todo_el_anio', 'verano', 'fuera_verano')),
+  orden INTEGER NOT NULL CHECK (orden BETWEEN 1 AND 4),
+  desde_kwh REAL NOT NULL CHECK (desde_kwh >= 0),
+  hasta_kwh REAL CHECK (hasta_kwh IS NULL OR hasta_kwh > desde_kwh),
+  precio_kwh REAL CHECK (precio_kwh IS NULL OR precio_kwh >= 0),
+  UNIQUE (tarifa_id, temporada, orden),
+  FOREIGN KEY (tarifa_id) REFERENCES tarifas_cfe(id) ON DELETE CASCADE
+);
+
+-- Tarifa propuesta por defecto según el estado de la dirección. RESTRICT impide borrar una tarifa asignada.
+CREATE TABLE IF NOT EXISTS tarifas_estados (
+  estado_codigo TEXT PRIMARY KEY,
+  tarifa_id INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (tarifa_id) REFERENCES tarifas_cfe(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS parametros_ahorro (
+  clave TEXT PRIMARY KEY CHECK (clave IN ('eficiencia', 'degradacion_anual', 'alza_tarifa_anual', 'iva', 'meses_verano')),
+  valor REAL NOT NULL,
+  descripcion TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS tarifas_bloques_tarifa_idx ON tarifas_bloques(tarifa_id, temporada, orden);

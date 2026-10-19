@@ -4,6 +4,8 @@ import process from 'node:process'
 import express from 'express'
 import { db, getProspecto, prospectSelect } from './database.js'
 import { ESTADOS_MEXICO, normalizarEstadoMexico } from '../shared/estadosMexico.js'
+import { estimarAhorro, faltantesDeTarifa, kwpDePaneles, PARAMETROS_POR_DEFECTO, validarBloques } from '../shared/ahorroSolar.js'
+import { horasSolaresPico } from '../shared/irradiacion.js'
 
 const app = express()
 const port = Number(process.env.ATLAS_PORT || 3001)
@@ -342,9 +344,27 @@ function getSolicitud(id) {
   }
 }
 
+// Lo que el prospecto ve de la estimación guardada al emitir; no recalcula ni expone costos internos.
+function ahorroPublico(supuestosJson) {
+  if (!supuestosJson) return { estado: 'no_disponible', motivo: 'Esta cotización se emitió antes de que ATLAS calculara estimaciones de ahorro.' }
+  const supuestos = JSON.parse(supuestosJson)
+  return {
+    estado: supuestos.estado,
+    motivo: supuestos.motivo,
+    calculado_at: supuestos.calculado_at,
+    consumo_mensual_kwh: supuestos.consumo_mensual_kwh,
+    consumo_objetivo_kwh: supuestos.consumo_objetivo_kwh,
+    kwp: supuestos.kwp,
+    irradiacion: supuestos.irradiacion,
+    parametros: supuestos.parametros,
+    tarifa: supuestos.tarifa && { codigo: supuestos.tarifa.codigo, nombre: supuestos.tarifa.nombre, pendiente_validar: supuestos.tarifa.pendiente_validar },
+    resultado: supuestos.resultado,
+  }
+}
+
 function getCotizacionPublica(solicitudId) {
   const cotizacion = db.prepare(`
-    SELECT id, version, precio_venta, emitida_at
+    SELECT id, version, precio_venta, emitida_at, supuestos_ahorro
     FROM cotizaciones_versiones
     WHERE solicitud_id = ? AND estado = 'enviada'
     ORDER BY version DESC LIMIT 1
@@ -355,6 +375,7 @@ function getCotizacionPublica(solicitudId) {
     version: cotizacion.version,
     precio_venta: cotizacion.precio_venta,
     emitida_at: cotizacion.emitida_at,
+    ahorro: ahorroPublico(cotizacion.supuestos_ahorro),
     items: db.prepare(`
       SELECT tipo, modelo, clasificacion, cantidad
       FROM cotizacion_version_items
@@ -544,7 +565,7 @@ const LIMITE_FILAS_IMPORTACION = 2000
 const columnasImportacionObligatorias = ['codigo', 'clase', 'tipo', 'modelo', 'costo', 'existencias', 'estado']
 const camposImportacion = ['tipo', 'modelo', 'clasificacion', 'costo_unitario', 'existencias', 'marca', 'capacidad_kwh', 'potencia_w', 'potencia_kw', 'activo']
 
-const claveImportacion = (valor) => String(valor).normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()
+const claveImportacion = (valor) => String(valor).normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
 const tiposPorClave = new Map([...tiposProducto].map((tipo) => [claveImportacion(tipo), tipo]))
 const clasesPorClave = new Map([['material', 'material'], ['material fisico', 'material'], ['servicio', 'servicio']])
 
@@ -839,6 +860,302 @@ app.delete('/api/proveedores/:id', autenticar, permitirRoles('Administrador'), (
   }
   if (!proveedor) return response.status(404).json({ error: 'Proveedor no encontrado' })
   response.json({ id, nombre: proveedor.nombre, productos_sin_proveedor: proveedor.productos_ligados })
+})
+
+// ─── Integración 6: tarifas CFE, parámetros y estimación de ahorro ───
+const tiposTarifa = new Set(['domestica', 'dac', 'comercial'])
+const rangosParametros = {
+  eficiencia: [0.01, 1, 'La eficiencia debe estar entre 0.01 y 1'],
+  degradacion_anual: [0, 0.2, 'La degradación anual debe estar entre 0 y 0.2 (20%)'],
+  alza_tarifa_anual: [-0.5, 1, 'El alza anual de tarifa debe estar entre -0.5 y 1'],
+  iva: [0, 1, 'El IVA debe estar entre 0 y 1'],
+  meses_verano: [0, 12, 'Los meses de verano deben estar entre 0 y 12'],
+}
+
+function getTarifa(id) {
+  const tarifa = db.prepare('SELECT * FROM tarifas_cfe WHERE id = ?').get(id)
+  if (!tarifa) return null
+  tarifa.bloques = db.prepare(`
+    SELECT temporada, orden, desde_kwh, hasta_kwh, precio_kwh FROM tarifas_bloques
+    WHERE tarifa_id = ? ORDER BY temporada, orden
+  `).all(id)
+  tarifa.estados = db.prepare('SELECT estado_codigo FROM tarifas_estados WHERE tarifa_id = ? ORDER BY estado_codigo').all(id).map((fila) => fila.estado_codigo)
+  tarifa.faltantes = faltantesDeTarifa(tarifa)
+  return tarifa
+}
+
+function listarTarifas() {
+  return db.prepare("SELECT id FROM tarifas_cfe ORDER BY CASE tipo WHEN 'domestica' THEN 1 WHEN 'dac' THEN 2 ELSE 3 END, codigo").all().map((fila) => getTarifa(fila.id))
+}
+
+function getParametrosAhorro() {
+  const parametros = { ...PARAMETROS_POR_DEFECTO }
+  for (const fila of db.prepare('SELECT clave, valor FROM parametros_ahorro').all()) parametros[fila.clave] = fila.valor
+  return parametros
+}
+
+function numeroOpcional(valor, campo, { minimo = 0, mayorQue = false } = {}) {
+  if (valor === undefined || valor === null || valor === '') return null
+  const numero = Number(valor)
+  if (!Number.isFinite(numero) || (mayorQue ? numero <= minimo : numero < minimo)) {
+    throw new Error(`${campo} debe ser un número ${mayorQue ? 'mayor que' : 'mayor o igual a'} ${minimo}`)
+  }
+  return numero
+}
+
+function validarTarifa(body, idActual = null) {
+  const codigo = textoRequerido(body.codigo, 'código de la tarifa').toUpperCase()
+  if (codigo.length > 20) throw new Error('El código de la tarifa no debe superar 20 caracteres')
+  const nombre = textoRequerido(body.nombre, 'nombre de la tarifa')
+  const tipo = body.tipo
+  if (!tiposTarifa.has(tipo)) throw new Error('Tipo de tarifa no válido')
+  const domestica = tipo === 'domestica'
+  const limiteDac = domestica ? numeroOpcional(body.limite_dac_kwh, 'El límite DAC', { mayorQue: true }) : null
+  let tarifaDacId = null
+  if (domestica && body.tarifa_dac_id !== undefined && body.tarifa_dac_id !== null && body.tarifa_dac_id !== '') {
+    tarifaDacId = idValido(body.tarifa_dac_id)
+    const dac = tarifaDacId && db.prepare("SELECT id FROM tarifas_cfe WHERE id = ? AND tipo = 'dac'").get(tarifaDacId)
+    if (!dac || tarifaDacId === idActual) throw new Error('La tarifa DAC asignada no es válida')
+  }
+  const cargoFijo = numeroOpcional(body.cargo_fijo_mensual, 'El cargo fijo mensual')
+  const vigencia = body.vigencia_desde ? String(body.vigencia_desde) : null
+  if (vigencia && !/^\d{4}-\d{2}-\d{2}$/.test(vigencia)) throw new Error('La vigencia debe tener el formato AAAA-MM-DD')
+  if (!Array.isArray(body.bloques)) throw new Error('Faltan los bloques de la tarifa')
+  const bloques = body.bloques.map((bloque) => ({
+    temporada: bloque.temporada,
+    orden: Number(bloque.orden),
+    desde_kwh: numeroOpcional(bloque.desde_kwh, 'El inicio del bloque') ?? 0,
+    hasta_kwh: numeroOpcional(bloque.hasta_kwh, 'El límite del bloque'),
+    precio_kwh: numeroOpcional(bloque.precio_kwh, 'El precio por kWh'),
+  }))
+  const errores = validarBloques(bloques)
+  if (errores.length) throw new Error(errores.join('. '))
+  const tarifa = {
+    codigo, nombre, tipo, limite_dac_kwh: limiteDac, tarifa_dac_id: tarifaDacId, cargo_fijo_mensual: cargoFijo,
+    vigencia_desde: vigencia, activa: body.activa === false ? 0 : 1, pendiente_validar: body.pendiente_validar === false ? 0 : 1,
+    notas: textoOpcional(body.notas, 'notas'), bloques,
+  }
+  // Solo se puede marcar como validada una tarifa con todos sus precios capturados.
+  const faltantes = faltantesDeTarifa(tarifa)
+  if (!tarifa.pendiente_validar && faltantes.length) throw new Error(`No puedes marcarla como validada; falta: ${faltantes.join(', ')}`)
+  return tarifa
+}
+
+function guardarBloques(tarifaId, bloques) {
+  db.prepare('DELETE FROM tarifas_bloques WHERE tarifa_id = ?').run(tarifaId)
+  const insertar = db.prepare('INSERT INTO tarifas_bloques (tarifa_id, temporada, orden, desde_kwh, hasta_kwh, precio_kwh) VALUES (?, ?, ?, ?, ?, ?)')
+  for (const bloque of bloques) insertar.run(tarifaId, bloque.temporada, bloque.orden, bloque.desde_kwh, bloque.hasta_kwh, bloque.precio_kwh)
+}
+
+function respuestaConflicto(error, response) {
+  if (String(error.message).includes('UNIQUE') && String(error.message).includes('codigo')) {
+    return response.status(409).json({ error: 'Ya existe una tarifa con ese código' })
+  }
+  return response.status(error.status || 400).json({ error: error.message, ...(error.datos ?? {}) })
+}
+
+app.get('/api/tarifas', autenticar, permitirRoles('Administrador', 'Agente'), (_request, response) => {
+  response.json({
+    tarifas: listarTarifas(),
+    estados: db.prepare('SELECT estado_codigo, tarifa_id FROM tarifas_estados ORDER BY estado_codigo').all(),
+    parametros: getParametrosAhorro(),
+  })
+})
+
+app.post('/api/tarifas', autenticar, permitirRoles('Administrador'), (request, response) => {
+  try {
+    const tarifa = validarTarifa(request.body)
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      const id = Number(db.prepare(`
+        INSERT INTO tarifas_cfe (codigo, nombre, tipo, limite_dac_kwh, tarifa_dac_id, cargo_fijo_mensual, vigencia_desde, activa, pendiente_validar, notas)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(tarifa.codigo, tarifa.nombre, tarifa.tipo, tarifa.limite_dac_kwh, tarifa.tarifa_dac_id, tarifa.cargo_fijo_mensual,
+        tarifa.vigencia_desde, tarifa.activa, tarifa.pendiente_validar, tarifa.notas).lastInsertRowid)
+      guardarBloques(id, tarifa.bloques)
+      db.exec('COMMIT')
+      response.status(201).json(getTarifa(id))
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+  } catch (error) {
+    respuestaConflicto(error, response)
+  }
+})
+
+app.put('/api/tarifas/:id', autenticar, permitirRoles('Administrador'), (request, response) => {
+  try {
+    const id = idValido(request.params.id)
+    if (!id) return response.status(400).json({ error: 'Identificador inválido' })
+    const actual = getTarifa(id)
+    if (!actual) return response.status(404).json({ error: 'Tarifa no encontrada' })
+    const tarifa = validarTarifa(request.body, id)
+    if (!tarifa.activa && actual.estados.length) {
+      throw Object.assign(new Error(`La tarifa está asignada a ${actual.estados.length} estado(s); reasígnalos antes de desactivarla`), { status: 409, datos: { estados: actual.estados } })
+    }
+    if (tarifa.tipo !== 'dac' && actual.tipo === 'dac' && db.prepare('SELECT 1 FROM tarifas_cfe WHERE tarifa_dac_id = ?').get(id)) {
+      throw Object.assign(new Error('Otras tarifas usan esta tarifa como DAC; cámbialas antes de modificar su tipo'), { status: 409 })
+    }
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      // Las cotizaciones ya emitidas no cambian: guardan su propia copia en supuestos_ahorro.
+      db.prepare(`
+        UPDATE tarifas_cfe SET codigo = ?, nombre = ?, tipo = ?, limite_dac_kwh = ?, tarifa_dac_id = ?, cargo_fijo_mensual = ?,
+          vigencia_desde = ?, activa = ?, pendiente_validar = ?, notas = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(tarifa.codigo, tarifa.nombre, tarifa.tipo, tarifa.limite_dac_kwh, tarifa.tarifa_dac_id, tarifa.cargo_fijo_mensual,
+        tarifa.vigencia_desde, tarifa.activa, tarifa.pendiente_validar, tarifa.notas, id)
+      guardarBloques(id, tarifa.bloques)
+      db.exec('COMMIT')
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+    response.json(getTarifa(id))
+  } catch (error) {
+    respuestaConflicto(error, response)
+  }
+})
+
+app.delete('/api/tarifas/:id', autenticar, permitirRoles('Administrador'), (request, response) => {
+  const id = idValido(request.params.id)
+  if (!id) return response.status(400).json({ error: 'Identificador inválido' })
+  const tarifa = getTarifa(id)
+  if (!tarifa) return response.status(404).json({ error: 'Tarifa no encontrada' })
+  if (tarifa.estados.length) {
+    return response.status(409).json({ error: `La tarifa está asignada a ${tarifa.estados.length} estado(s); reasígnalos a otra tarifa antes de eliminarla`, estados: tarifa.estados })
+  }
+  const dependientes = db.prepare('SELECT codigo FROM tarifas_cfe WHERE tarifa_dac_id = ?').all(id).map((fila) => fila.codigo)
+  if (dependientes.length) {
+    return response.status(409).json({ error: `Las tarifas ${dependientes.join(', ')} usan esta tarifa como DAC; cámbialas antes de eliminarla` })
+  }
+  db.prepare('DELETE FROM tarifas_cfe WHERE id = ?').run(id)
+  response.json({ id, codigo: tarifa.codigo })
+})
+
+app.put('/api/tarifas-estados/:codigo', autenticar, permitirRoles('Administrador'), (request, response) => {
+  const codigo = request.params.codigo
+  if (!codigosEstado.has(codigo)) return response.status(400).json({ error: 'Estado no válido' })
+  const tarifaId = idValido(request.body.tarifa_id)
+  const tarifa = tarifaId && db.prepare("SELECT id, codigo FROM tarifas_cfe WHERE id = ? AND activa = 1 AND tipo IN ('domestica', 'comercial')").get(tarifaId)
+  if (!tarifa) return response.status(400).json({ error: 'Elige una tarifa doméstica o comercial activa' })
+  db.prepare(`
+    INSERT INTO tarifas_estados (estado_codigo, tarifa_id) VALUES (?, ?)
+    ON CONFLICT(estado_codigo) DO UPDATE SET tarifa_id = excluded.tarifa_id, updated_at = CURRENT_TIMESTAMP
+  `).run(codigo, tarifaId)
+  response.json({ estado_codigo: codigo, tarifa_id: tarifaId })
+})
+
+app.put('/api/parametros-ahorro', autenticar, permitirRoles('Administrador'), (request, response) => {
+  try {
+    const cambios = Object.entries(request.body ?? {})
+    if (!cambios.length) throw new Error('No hay parámetros para guardar')
+    const valores = cambios.map(([clave, valor]) => {
+      const rango = rangosParametros[clave]
+      if (!rango) throw new Error(`Parámetro desconocido: ${clave}`)
+      const numero = Number(valor)
+      if (valor === '' || valor === null || !Number.isFinite(numero) || numero < rango[0] || numero > rango[1]) throw new Error(rango[2])
+      if (clave === 'meses_verano' && !Number.isInteger(numero)) throw new Error('Los meses de verano deben ser un número entero')
+      return [clave, numero]
+    })
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      const actualizar = db.prepare('UPDATE parametros_ahorro SET valor = ?, updated_at = CURRENT_TIMESTAMP WHERE clave = ?')
+      for (const [clave, numero] of valores) actualizar.run(numero, clave)
+      db.exec('COMMIT')
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+    response.json(getParametrosAhorro())
+  } catch (error) {
+    response.status(400).json({ error: error.message })
+  }
+})
+
+const copiaTarifa = (tarifa) => tarifa && ({
+  id: tarifa.id, codigo: tarifa.codigo, nombre: tarifa.nombre, tipo: tarifa.tipo, limite_dac_kwh: tarifa.limite_dac_kwh,
+  cargo_fijo_mensual: tarifa.cargo_fijo_mensual, vigencia_desde: tarifa.vigencia_desde,
+  pendiente_validar: Boolean(tarifa.pendiente_validar), bloques: tarifa.bloques,
+})
+
+// Calcula la estimación de una solicitud y devuelve la copia completa de supuestos y resultados,
+// que es lo que se guarda al emitir para que la cotización no cambie si después cambian tarifas o precios.
+function construirEstimacion(solicitudId, tarifaIdSolicitada, precioVenta) {
+  const solicitud = db.prepare(`
+    SELECT s.id, s.consumo_mensual_kwh, s.consumo_objetivo_kwh, d.estado_codigo, rt.id AS revision_id
+    FROM solicitudes_cotizacion s
+    LEFT JOIN direcciones_cliente d ON d.prospecto_id = s.prospecto_id
+    LEFT JOIN revisiones_tecnicas rt ON rt.solicitud_id = s.id
+    WHERE s.id = ?
+  `).get(solicitudId)
+  const tarifaSugeridaId = solicitud.estado_codigo
+    ? db.prepare('SELECT tarifa_id FROM tarifas_estados WHERE estado_codigo = ?').get(solicitud.estado_codigo)?.tarifa_id ?? null
+    : null
+  const tarifaId = tarifaIdSolicitada ?? tarifaSugeridaId
+  const tarifa = tarifaId ? getTarifa(tarifaId) : null
+  if (tarifaIdSolicitada && (!tarifa || !tarifa.activa || tarifa.tipo === 'dac')) {
+    throw Object.assign(new Error('Elige una tarifa doméstica o comercial activa'), { status: 400 })
+  }
+  const tarifaDac = tarifa?.tarifa_dac_id ? getTarifa(tarifa.tarifa_dac_id) : null
+  const paneles = solicitud.revision_id ? db.prepare(`
+    SELECT ri.producto_codigo, ri.modelo_aplicado AS modelo, ri.cantidad, pc.potencia_w
+    FROM revision_tecnica_items ri
+    JOIN productos_catalogo pc ON pc.id = ri.producto_id
+    WHERE ri.revision_id = ? AND ri.tipo_aplicado = 'Panel'
+    ORDER BY ri.id
+  `).all(solicitud.revision_id) : []
+  const kwp = kwpDePaneles(paneles.filter((panel) => panel.potencia_w))
+  const irradiacion = horasSolaresPico(solicitud.estado_codigo)
+  const parametros = getParametrosAhorro()
+
+  let resultado
+  if (!tarifa) resultado = { estado: 'sin_tarifa', motivo: 'No hay una tarifa asignada al estado de la dirección; elige una tarifa para estimar el ahorro.' }
+  else {
+    try {
+      resultado = estimarAhorro({ consumoMensualKwh: solicitud.consumo_mensual_kwh, kwp, hsp: irradiacion.hsp, parametros, tarifa, tarifaDac, precioVenta })
+    } catch (error) {
+      resultado = { estado: 'sin_datos', motivo: `No se pudo estimar el ahorro: ${error.message}.` }
+    }
+  }
+  const cifras = { ...resultado }
+  delete cifras.parametros
+  return {
+    tarifa_sugerida_id: tarifaSugeridaId,
+    supuestos: {
+      version_calculo: 1,
+      calculado_at: new Date().toISOString(),
+      estado: resultado.estado,
+      motivo: resultado.motivo ?? null,
+      consumo_mensual_kwh: solicitud.consumo_mensual_kwh,
+      consumo_objetivo_kwh: solicitud.consumo_objetivo_kwh,
+      estado_codigo: solicitud.estado_codigo,
+      irradiacion: { hsp: irradiacion.hsp, fuente: irradiacion.fuente, fecha: irradiacion.fecha, conocido: irradiacion.conocido },
+      paneles,
+      kwp,
+      parametros,
+      tarifa: copiaTarifa(tarifa),
+      tarifa_dac: copiaTarifa(tarifaDac),
+      resultado: resultado.estado === 'calculada' ? cifras : null,
+    },
+  }
+}
+
+app.get('/api/agente/solicitudes/:id/estimacion', autenticar, permitirRoles('Agente'), (request, response) => {
+  const id = idValido(request.params.id)
+  if (!id) return response.status(400).json({ error: 'Identificador inválido' })
+  const solicitud = db.prepare('SELECT agente_responsable_id FROM solicitudes_cotizacion WHERE id = ?').get(id)
+  if (!solicitud || solicitud.agente_responsable_id !== request.usuario.usuario_id) return response.status(404).json({ error: 'Solicitud no encontrada' })
+  const precioVenta = Number(request.query.precio_venta)
+  if (!Number.isFinite(precioVenta) || precioVenta <= 0) return response.status(400).json({ error: 'Ingresa un precio de venta mayor que cero para estimar el ahorro' })
+  const tarifaId = request.query.tarifa_id ? idValido(request.query.tarifa_id) : null
+  if (request.query.tarifa_id && !tarifaId) return response.status(400).json({ error: 'Tarifa no válida' })
+  try {
+    response.json(construirEstimacion(id, tarifaId, precioVenta))
+  } catch (error) {
+    response.status(error.status || 400).json({ error: error.message })
+  }
 })
 
 app.get('/api/tecnico/solicitudes', autenticar, permitirRoles('Técnico'), (request, response) => {
@@ -1148,6 +1465,8 @@ app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agent
   if (!id) return response.status(400).json({ error: 'Identificador inválido' })
   const precioVenta = Number(request.body.precio_venta)
   if (!Number.isFinite(precioVenta) || precioVenta <= 0) return response.status(400).json({ error: 'El precio final de venta debe ser mayor que cero' })
+  const tarifaId = request.body.tarifa_id === undefined || request.body.tarifa_id === null || request.body.tarifa_id === '' ? null : idValido(request.body.tarifa_id)
+  if (request.body.tarifa_id && !tarifaId) return response.status(400).json({ error: 'Tarifa no válida' })
 
   try {
     db.exec('BEGIN IMMEDIATE')
@@ -1170,11 +1489,17 @@ app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agent
       if (items.length === 0) throw Object.assign(new Error('La revisión técnica no tiene renglones'), { status: 409 })
       const costoInterno = Math.round(items.reduce((total, item) => total + item.subtotal, 0) * 100) / 100
       const version = Number(db.prepare('SELECT COALESCE(MAX(version), 0) + 1 AS version FROM cotizaciones_versiones WHERE solicitud_id = ?').get(id).version)
+      // La estimación se calcula dentro de la misma transacción y se guarda con todos sus supuestos.
+      const { supuestos } = construirEstimacion(id, tarifaId, precioVenta)
       const cotizacionId = Number(db.prepare(`
         INSERT INTO cotizaciones_versiones (
-          solicitud_id, revision_id, agente_id, version, costo_interno_total, precio_venta, estado
-        ) VALUES (?, ?, ?, ?, ?, ?, 'enviada')
-      `).run(id, solicitud.revision_id, request.usuario.usuario_id, version, costoInterno, precioVenta).lastInsertRowid)
+          solicitud_id, revision_id, agente_id, version, costo_interno_total, precio_venta, estado,
+          ahorro_anual_est, retorno_inversion_anios, supuestos_ahorro
+        ) VALUES (?, ?, ?, ?, ?, ?, 'enviada', ?, ?, ?)
+      `).run(
+        id, solicitud.revision_id, request.usuario.usuario_id, version, costoInterno, precioVenta,
+        supuestos.resultado?.ahorro_anual ?? null, supuestos.resultado?.retorno_inversion_anios ?? null, JSON.stringify(supuestos),
+      ).lastInsertRowid)
       const insertar = db.prepare(`
         INSERT INTO cotizacion_version_items (
           cotizacion_id, producto_codigo, tipo, modelo, clasificacion, cantidad,

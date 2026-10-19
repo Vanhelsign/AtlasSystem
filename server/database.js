@@ -3,7 +3,7 @@ import { basename, dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import process from 'node:process'
-import { normalizarEstadoMexico } from '../shared/estadosMexico.js'
+import { ESTADOS_MEXICO, normalizarEstadoMexico } from '../shared/estadosMexico.js'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 const dataDir = join(serverDir, '..', 'data')
@@ -77,6 +77,8 @@ for (const [tabla, columnas] of [
     ['ahorro_anual_est', 'REAL CHECK (ahorro_anual_est IS NULL OR ahorro_anual_est >= 0)'],
     ['retorno_inversion_anios', 'REAL CHECK (retorno_inversion_anios IS NULL OR retorno_inversion_anios >= 0)'],
     ['estatus_respuesta', "TEXT NOT NULL DEFAULT 'pendiente' CHECK (estatus_respuesta IN ('pendiente', 'aprobada', 'rechazada', 'pago_vencido'))"],
+    // Integración 6: copia de los supuestos de la estimación de ahorro al emitir la cotización.
+    ['supuestos_ahorro', 'TEXT CHECK (supuestos_ahorro IS NULL OR json_valid(supuestos_ahorro))'],
   ]],
 ]) {
   const existentes = db.prepare(`PRAGMA table_info(${tabla})`).all()
@@ -208,6 +210,57 @@ if (db.prepare('PRAGMA user_version').get().user_version < 2) {
     ]) insertarProveedorInicial.run(nombre)
 
     db.exec('PRAGMA user_version = 2;')
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+// ATLAS v2, Integración 6 (user_version 3): estructura de tarifas de ejemplo y parámetros de ahorro, una sola vez.
+// Los precios y cargos fijos quedan vacíos y todas las tarifas "pendientes de validar": el administrador
+// captura los valores reales desde la app con un recibo de CFE. Los límites de los bloques también son de ejemplo.
+if (db.prepare('PRAGMA user_version').get().user_version < 3) {
+  db.exec('BEGIN')
+  try {
+    const nota = 'Estructura de ejemplo. Capture precios, cargo fijo y límites con un recibo de CFE antes de validarla.'
+    const insertarTarifa = db.prepare(`
+      INSERT OR IGNORE INTO tarifas_cfe (codigo, nombre, tipo, limite_dac_kwh, cargo_fijo_mensual, activa, pendiente_validar, notas)
+      VALUES (?, ?, ?, ?, NULL, 1, 1, ?)
+    `)
+    const idTarifa = (codigo) => db.prepare('SELECT id FROM tarifas_cfe WHERE codigo = ?').get(codigo).id
+    const insertarBloque = db.prepare(`
+      INSERT OR IGNORE INTO tarifas_bloques (tarifa_id, temporada, orden, desde_kwh, hasta_kwh, precio_kwh)
+      VALUES (?, ?, ?, ?, ?, NULL)
+    `)
+    const cargarBloques = (codigo, temporada, limites) => {
+      const tarifaId = idTarifa(codigo)
+      limites.forEach((hasta, indice) => insertarBloque.run(tarifaId, temporada, indice + 1, indice === 0 ? 0 : limites[indice - 1], hasta))
+    }
+
+    insertarTarifa.run('DAC', 'Doméstica de alto consumo (DAC)', 'dac', null, nota)
+    insertarTarifa.run('1', 'Doméstica 1 (ejemplo)', 'domestica', 250, nota)
+    insertarTarifa.run('1C', 'Doméstica 1C (Nuevo León)', 'domestica', 850, nota)
+    insertarTarifa.run('COM', 'Comercial (precio plano)', 'comercial', null, nota)
+    db.prepare("UPDATE tarifas_cfe SET tarifa_dac_id = ? WHERE codigo IN ('1', '1C') AND tarifa_dac_id IS NULL").run(idTarifa('DAC'))
+
+    cargarBloques('DAC', 'todo_el_anio', [null])
+    cargarBloques('COM', 'todo_el_anio', [null])
+    cargarBloques('1', 'todo_el_anio', [75, 140, null])
+    cargarBloques('1C', 'verano', [150, 300, 450, null])
+    cargarBloques('1C', 'fuera_verano', [75, 175, null])
+
+    const asignarEstado = db.prepare('INSERT OR IGNORE INTO tarifas_estados (estado_codigo, tarifa_id) VALUES (?, ?)')
+    for (const { codigo } of ESTADOS_MEXICO) asignarEstado.run(codigo, idTarifa(codigo === 'MX-NLE' ? '1C' : '1'))
+
+    const insertarParametro = db.prepare('INSERT OR IGNORE INTO parametros_ahorro (clave, valor, descripcion) VALUES (?, ?, ?)')
+    insertarParametro.run('eficiencia', 0.8, 'Eficiencia global del sistema (pérdidas por temperatura, cableado, inversor y suciedad)')
+    insertarParametro.run('degradacion_anual', 0.005, 'Pérdida anual de generación de los paneles')
+    insertarParametro.run('alza_tarifa_anual', 0, 'Incremento anual supuesto de la tarifa eléctrica')
+    insertarParametro.run('iva', 0.16, 'IVA aplicado al recibo de CFE')
+    insertarParametro.run('meses_verano', 6, 'Meses de temporada de verano en tarifas con dos temporadas')
+
+    db.exec('PRAGMA user_version = 3;')
     db.exec('COMMIT')
   } catch (error) {
     db.exec('ROLLBACK')

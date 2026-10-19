@@ -37,6 +37,7 @@ const claveTexto = (valor) => String(valor ?? '')
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '')
   .trim()
+  .replace(/\s+/g, ' ')
   .toLowerCase()
 
 const estadosPorValor = new Map()
@@ -50,6 +51,8 @@ estadosPorValor.set('df', 'MX-CMX')
 estadosPorValor.set('coahuila de zaragoza', 'MX-COA')
 estadosPorValor.set('michoacan de ocampo', 'MX-MIC')
 estadosPorValor.set('veracruz de ignacio de la llave', 'MX-VER')
+estadosPorValor.set('edomex', 'MX-MEX')
+estadosPorValor.set('queretaro de arteaga', 'MX-QUE')
 
 export function normalizarEstadoMexico(valor) {
   return estadosPorValor.get(claveTexto(valor)) ?? null

@@ -7,6 +7,9 @@ import { useEffect, useState } from "react";
 import Cotizacion from "./Cotizacion.jsx";
 import SolicitudesDimensionamiento from "./SolicitudesDimensionamiento.jsx";
 import GestionInventario from "./InventarioFisico.jsx";
+import TarifasCfe from "./TarifasCfe.jsx";
+import AhorroInversion from "./AhorroInversion.jsx";
+import EmisionAhorro, { ModalEmitirCotizacion } from "./EmisionAhorro.jsx";
 import { ESTADOS_MEXICO, nombreEstadoMexico } from "../shared/estadosMexico.js";
 
 // ─────────────────────────────────────────────────────────
@@ -251,6 +254,9 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
   const [precioVenta, setPrecioVenta] = useState("");
   const [motivoDevolucion, setMotivoDevolucion] = useState("");
   const [procesandoRevision, setProcesandoRevision] = useState(false);
+  const [tarifaEmision, setTarifaEmision] = useState("");
+  const [estimacionEmision, setEstimacionEmision] = useState(null);
+  const [confirmandoEmision, setConfirmandoEmision] = useState(false);
 
   const estadoDe = (registro) => {
     if (!registro.solicitud_id) return "informacion_incompleta";
@@ -270,6 +276,8 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
     setErrorDetalle("");
     setMensajeDetalle("");
     setMotivoDevolucion("");
+    setTarifaEmision("");
+    setEstimacionEmision(null);
     if (!registro.solicitud_id) return;
     try {
       const response = await fetch(`/api/solicitudes/${registro.solicitud_id}`, {
@@ -312,8 +320,10 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
       onActualizarRegistro(data.registro);
       setMensajeDetalle(accion === "aprobar" ? "Cotización enviada al prospecto." : "Revisión devuelta al técnico responsable.");
       setMotivoDevolucion("");
+      return null;
     } catch (error) {
       setErrorDetalle(error.message);
+      return error.message;
     } finally {
       setProcesandoRevision(false);
     }
@@ -322,8 +332,14 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
   const aprobar = () => {
     const precio = Number(precioVenta);
     if (!Number.isFinite(precio) || precio <= 0) return setErrorDetalle("Ingresa un precio final de venta válido.");
-    if (!window.confirm(`¿Enviar la cotización al prospecto por ${fmt(precio)}?`)) return;
-    ejecutarRevision("aprobar", { precio_venta: precio });
+    setErrorDetalle("");
+    setConfirmandoEmision(true);
+  };
+
+  const confirmarEmision = async () => {
+    const error = await ejecutarRevision("aprobar", { precio_venta: Number(precioVenta), tarifa_id: tarifaEmision || undefined });
+    if (!error) setConfirmandoEmision(false);
+    return error;
   };
 
   const devolver = () => {
@@ -385,7 +401,8 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
           {solicitudDetalle?.revision_tecnica?.items?.length > 0 && <section className="mt-6 space-y-3 border-t pt-5"><div><h3 className="font-semibold">Componentes propuestos por el técnico</h3><p className="text-xs text-slate-500">Costos internos; todavía no son el precio de venta.</p></div><div className="overflow-x-auto"><table className="min-w-[600px] w-full text-sm"><thead className="bg-slate-50"><tr><th className="p-2 text-left">Modelo</th><th className="p-2">Cantidad</th><th className="p-2">Costo unitario</th><th className="p-2">Subtotal</th></tr></thead><tbody>{solicitudDetalle.revision_tecnica.items.map((item) => <tr key={item.id} className="border-t"><td className="p-2"><b>{item.tipo_aplicado}</b><br/><span className="text-slate-500">{item.modelo_aplicado}</span></td><td className="p-2 text-center">{item.cantidad}</td><td className="p-2 text-right">{fmt(item.costo_unitario_aplicado)}</td><td className="p-2 text-right font-semibold">{fmt(item.subtotal)}</td></tr>)}</tbody></table></div><p className="text-right font-bold">Costo total interno: {fmt(costoInterno)}</p></section>}
           {solicitudDetalle?.revision_tecnica?.devoluciones?.length > 0 && <section className="mt-5 rounded-lg bg-amber-50 p-4"><h3 className="text-sm font-bold text-amber-900">Historial de devoluciones</h3><ul className="mt-2 space-y-2 text-sm text-amber-900">{solicitudDetalle.revision_tecnica.devoluciones.map((devolucion) => <li key={devolucion.id}><b>{devolucion.agente_nombre}:</b> {devolucion.motivo}<span className="block text-xs text-amber-700">Devuelta: {fechaSolicitud(devolucion.devuelta_at)} · {devolucion.atendida_at ? `Atendida: ${fechaSolicitud(devolucion.atendida_at)}` : "Pendiente de corrección"}</span></li>)}</ul></section>}
           {solicitudDetalle?.cotizacion && <section className="mt-5 rounded-lg border border-green-200 bg-green-50 p-4 text-sm"><h3 className="font-bold text-green-900">Cotización enviada al prospecto</h3><p className="mt-1 text-green-800">Versión {solicitudDetalle.cotizacion.version} · Precio final: <b>{fmt(solicitudDetalle.cotizacion.precio_venta)}</b></p><p className="text-xs text-green-700">Emitida: {fechaSolicitud(solicitudDetalle.cotizacion.emitida_at)}</p></section>}
-          {listaParaRevision && <section className="mt-6 space-y-4 border-t pt-5"><div><h3 className="font-semibold">Revisión del agente</h3><p className="text-xs text-slate-500">El margen propone un precio, pero puedes confirmar otro precio final antes de enviarlo.</p></div><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium">Margen comercial (%)<input type="number" step="0.01" value={margenComercial} onChange={(event) => cambiarMargen(event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 font-normal"/></label><label className="text-sm font-medium">Precio final de venta<input type="number" min="0.01" step="0.01" value={precioVenta} onChange={(event) => setPrecioVenta(event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 font-normal"/></label></div><div className="rounded-lg bg-slate-50 p-3 text-sm">Costo interno: <b>{fmt(costoInterno)}</b> · Precio a confirmar: <b>{fmt(Number(precioVenta) || 0)}</b></div><label className="block text-sm font-medium">Motivo para devolver a corrección<textarea value={motivoDevolucion} onChange={(event) => setMotivoDevolucion(event.target.value)} rows="3" className="mt-1 w-full rounded-lg border px-3 py-2 font-normal" placeholder="Describe qué debe corregir el técnico"/></label><div className="flex flex-col gap-2 sm:flex-row"><button disabled={procesandoRevision} onClick={aprobar} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-bold text-white disabled:bg-green-300">Aprobar y enviar al prospecto</button><button disabled={procesandoRevision} onClick={devolver} className="rounded-lg border border-amber-500 px-4 py-2 text-sm font-bold text-amber-800 disabled:opacity-50">Devolver para corrección</button></div></section>}
+          {listaParaRevision && <section className="mt-6 space-y-4 border-t pt-5"><div><h3 className="font-semibold">Revisión del agente</h3><p className="text-xs text-slate-500">El margen propone un precio, pero puedes confirmar otro precio final antes de enviarlo.</p></div><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium">Margen comercial (%)<input type="number" step="0.01" value={margenComercial} onChange={(event) => cambiarMargen(event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 font-normal"/></label><label className="text-sm font-medium">Precio final de venta<input type="number" min="0.01" step="0.01" value={precioVenta} onChange={(event) => setPrecioVenta(event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 font-normal"/></label></div><div className="rounded-lg bg-slate-50 p-3 text-sm">Costo interno: <b>{fmt(costoInterno)}</b> · Precio a confirmar: <b>{fmt(Number(precioVenta) || 0)}</b></div><EmisionAhorro token={token} solicitudId={registroDetalle.solicitud_id} precioVenta={precioVenta} tarifaId={tarifaEmision} onTarifa={setTarifaEmision} onEstimacion={setEstimacionEmision} /><label className="block text-sm font-medium">Motivo para devolver a corrección<textarea value={motivoDevolucion} onChange={(event) => setMotivoDevolucion(event.target.value)} rows="3" className="mt-1 w-full rounded-lg border px-3 py-2 font-normal" placeholder="Describe qué debe corregir el técnico"/></label><div className="flex flex-col gap-2 sm:flex-row"><button disabled={procesandoRevision} onClick={aprobar} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-bold text-white disabled:bg-green-300">Aprobar y enviar al prospecto</button><button disabled={procesandoRevision} onClick={devolver} className="rounded-lg border border-amber-500 px-4 py-2 text-sm font-bold text-amber-800 disabled:opacity-50">Devolver para corrección</button></div></section>}
+          {confirmandoEmision && <ModalEmitirCotizacion precio={Number(precioVenta)} supuestos={estimacionEmision} onCerrar={() => setConfirmandoEmision(false)} onConfirmar={confirmarEmision} />}
         </div>
       </div>}
     </div>
@@ -787,6 +804,7 @@ export default function App() {
     const rol = usuarioActual.rol;
     if (rol === "Cliente") return [
       { key: "portal_cliente", label: "Inicio", icon: "🏠" },
+      { key: "ahorro_inversion", label: "Ahorro e inversión", icon: "💰" },
       { key: "datos_personales", label: "Datos personales", icon: "👤" },
     ];
     if (rol === "Técnico") return [
@@ -799,6 +817,7 @@ export default function App() {
       { key: "reactivacion", label: "Reactivación Comercial", icon: "📞" },
       { key: "historial", label: "Cotizaciones Emitidas", icon: "📄" },
       { key: "inventario", label: "Inventario Físico", icon: "📦" },
+      { key: "tarifas", label: "Tarifas y ahorro", icon: "⚡" },
       { key: "usuarios", label: "Usuarios y personal", icon: "👥" },
     ];
     return [
@@ -905,6 +924,8 @@ export default function App() {
         
         {pagina === "portal_cliente" && <PortalCliente usuarioActual={usuarioActual} datos={datosPortal} cargando={cargandoPortal} error={errorPortal} />}
         {pagina === "datos_personales" && <DatosPersonales datos={datosPortal} cargando={cargandoPortal} error={errorPortal} />}
+        {pagina === "ahorro_inversion" && <AhorroInversion datos={datosPortal} cargando={cargandoPortal} error={errorPortal} onVolver={() => setPagina("portal_cliente")} />}
+        {pagina === "tarifas" && usuarioActual.rol === "Administrador" && <TarifasCfe token={usuarioActual.token} />}
         {pagina === "historial" && <ListaSolicitudes registros={leads} token={usuarioActual.token} usuario={usuarioActual} onActualizarRegistro={(registro) => setLeads((actuales) => actuales.map((item) => item.id === registro.id ? registro : item))} />}
         {pagina === "usuarios" && usuarioActual.rol === "Administrador" && <UsuariosPersonal token={usuarioActual.token} />}
       </main>
