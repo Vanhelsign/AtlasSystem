@@ -307,6 +307,9 @@ export default function ModalTarifa({ tarifa, tarifasDac, iva, onCerrar, onGuard
     notas: tarifa?.notas ?? "",
   }));
   const [juegos, setJuegos] = useState(() => juegosIniciales(tarifa));
+  // Campos, precios, orígenes y bloques con los que se abrió el modal; si difieren, cerrar pide confirmación.
+  const [valoresIniciales] = useState(() => JSON.stringify({ form, juegos }));
+  const hayCambios = JSON.stringify({ form, juegos }) !== valoresIniciales;
   const [modoCaptura, setModoCaptura] = useState("manual");
   const [nota, setNota] = useState("");
   const [intento, setIntento] = useState(false);
@@ -412,8 +415,10 @@ export default function ModalTarifa({ tarifa, tarifasDac, iva, onCerrar, onGuard
       onCerrar={onCerrar}
       onEnviar={guardar}
       ancho="max-w-4xl"
-      acciones={<>
-        <button type="button" onClick={onCerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
+      confirmarCierre={hayCambios}
+      mensajeCambios="Cambiaste datos, bloques, precios u orígenes de esta tarifa y no los has guardado. Si cierras, se perderán."
+      acciones={({ cerrar }) => <>
+        <button type="button" onClick={cerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
         <button type="submit" disabled={ocupado} className={BOTON_PRIMARIO}>{ocupado ? "Guardando…" : editando ? "Guardar tarifa" : "Crear tarifa"}</button>
       </>}
     >

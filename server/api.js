@@ -94,13 +94,33 @@ function iniciarSesion(cuenta) {
   return token
 }
 
+// Mientras una cuenta de cliente tenga una contraseña temporal, solo puede cambiarla o cerrar sesión.
+const RUTAS_CON_CAMBIO_PENDIENTE = new Set(['POST /api/portal/cambiar-contrasena', 'POST /api/logout'])
+
 function autenticar(request, response, next) {
   const authorization = request.get('authorization') ?? ''
   const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
   const sesion = sesiones.get(token)
   if (!sesion) return response.status(401).json({ error: 'Sesión requerida o vencida' })
+  if (sesion.debe_cambiar_password && !RUTAS_CON_CAMBIO_PENDIENTE.has(`${request.method} ${request.baseUrl}${request.path}`)) {
+    return response.status(403).json({ error: 'Debes cambiar tu contraseña temporal antes de continuar', codigo: 'debe_cambiar_password' })
+  }
   request.usuario = sesion
+  request.token = token
   next()
+}
+
+// Intentos fallidos de cambio de contraseña por cuenta de cliente. Viven en memoria, igual que las sesiones:
+// limitación conocida, el contador se reinicia si el servidor se reinicia.
+const MAX_INTENTOS_CONTRASENA = 5
+const VENTANA_INTENTOS_MS = 10 * 60 * 1000
+const intentosFallidos = new Map()
+
+function intentosRecientes(cuentaId, ahora = Date.now()) {
+  const recientes = (intentosFallidos.get(cuentaId) ?? []).filter((momento) => ahora - momento < VENTANA_INTENTOS_MS)
+  if (recientes.length) intentosFallidos.set(cuentaId, recientes)
+  else intentosFallidos.delete(cuentaId)
+  return recientes
 }
 
 function permitirRoles(...roles) {
@@ -474,7 +494,7 @@ app.post('/api/login', (request, response) => {
     }
 
     const cuenta = db.prepare(`
-      SELECT c.email, c.password_hash, c.password_salt, c.rol,
+      SELECT c.id AS cuenta_id, c.email, c.password_hash, c.password_salt, c.rol, c.debe_cambiar_password,
              p.id AS prospecto_id, p.nombre
       FROM cuentas_cliente c
       JOIN prospectos p ON p.id = c.prospecto_id
@@ -484,10 +504,12 @@ app.post('/api/login', (request, response) => {
       return response.status(401).json({ error: 'Credenciales incorrectas' })
     }
     const sesion = {
+      cuenta_id: cuenta.cuenta_id,
       email: cuenta.email,
       nombre: cuenta.nombre,
       rol: cuenta.rol,
       prospecto_id: cuenta.prospecto_id,
+      debe_cambiar_password: Boolean(cuenta.debe_cambiar_password),
     }
     response.json({ ...sesion, token: iniciarSesion(sesion) })
   } catch (error) {
@@ -499,6 +521,61 @@ app.post('/api/logout', autenticar, (request, response) => {
   const token = request.get('authorization').slice(7)
   sesiones.delete(token)
   response.status(204).end()
+})
+
+// Cambio de contraseña del cliente. Nunca devuelve ni registra contraseñas.
+app.post('/api/portal/cambiar-contrasena', autenticar, permitirRoles('Cliente'), (request, response) => {
+  const cuentaId = request.usuario.cuenta_id
+  const { actual, nueva, confirmacion } = request.body ?? {}
+  if (![actual, nueva, confirmacion].every((valor) => typeof valor === 'string')) {
+    return response.status(400).json({ error: 'Faltan datos para cambiar la contraseña' })
+  }
+
+  const recientes = intentosRecientes(cuentaId)
+  if (recientes.length >= MAX_INTENTOS_CONTRASENA) {
+    const minutos = Math.max(1, Math.ceil((recientes[0] + VENTANA_INTENTOS_MS - Date.now()) / 60000))
+    return response.status(429).json({ error: `Demasiados intentos con una contraseña actual incorrecta. Espera ${minutos} ${minutos === 1 ? 'minuto' : 'minutos'} e inténtalo de nuevo.` })
+  }
+
+  if (!actual) return response.status(400).json({ error: 'Escribe tu contraseña actual', campo: 'actual' })
+  if (nueva.length < 8) return response.status(400).json({ error: 'La nueva contraseña debe tener al menos 8 caracteres', campo: 'nueva' })
+  if (nueva.length > 200) return response.status(400).json({ error: 'La nueva contraseña no debe superar 200 caracteres', campo: 'nueva' })
+  if (nueva === actual) return response.status(400).json({ error: 'La nueva contraseña debe ser distinta de la actual', campo: 'nueva' })
+  if (confirmacion !== nueva) return response.status(400).json({ error: 'La confirmación no coincide con la nueva contraseña', campo: 'confirmacion' })
+
+  const cuenta = db.prepare('SELECT id, password_hash, password_salt FROM cuentas_cliente WHERE id = ?').get(cuentaId)
+  if (!cuenta) return response.status(404).json({ error: 'Cuenta no encontrada' })
+  // passwordCoincide recalcula el scrypt con la sal de la cuenta y compara en tiempo constante.
+  if (!passwordCoincide(actual, cuenta.password_hash, cuenta.password_salt)) {
+    recientes.push(Date.now())
+    intentosFallidos.set(cuentaId, recientes)
+    const restantes = MAX_INTENTOS_CONTRASENA - recientes.length
+    return response.status(400).json({
+      error: restantes > 0
+        ? `La contraseña actual no es correcta. Te ${restantes === 1 ? 'queda 1 intento' : `quedan ${restantes} intentos`} antes de un bloqueo de 10 minutos.`
+        : 'La contraseña actual no es correcta. Alcanzaste el límite de intentos: espera 10 minutos.',
+      campo: 'actual',
+    })
+  }
+
+  const credencial = hashPassword(nueva)
+  db.prepare(`
+    UPDATE cuentas_cliente
+    SET password_hash = ?, password_salt = ?, debe_cambiar_password = 0, password_actualizada_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(credencial.hash, credencial.salt, cuentaId)
+  intentosFallidos.delete(cuentaId)
+
+  // Cierra las demás sesiones de la cuenta y conserva la actual.
+  let cerradas = 0
+  for (const [token, sesion] of sesiones) {
+    if (sesion.cuenta_id === cuentaId && sesion.rol === 'Cliente' && token !== request.token) {
+      sesiones.delete(token)
+      cerradas += 1
+    }
+  }
+  request.usuario.debe_cambiar_password = false
+  response.json({ actualizada: true, sesiones_cerradas: cerradas })
 })
 
 app.get('/api/productos', autenticar, permitirRoles('Administrador', 'Agente', 'Técnico'), (request, response) => {
@@ -792,7 +869,7 @@ app.post('/api/productos/importacion/confirmar', autenticar, permitirRoles('Admi
     transaccionAbierta = false
   } catch (error) {
     if (transaccionAbierta) db.exec('ROLLBACK')
-    console.error(error)
+    console.error(error.stack ?? String(error))
     return response.status(500).json({ error: `No se aplicó ningún cambio del archivo: ${error.message}` })
   }
 
@@ -1801,7 +1878,10 @@ app.use((error, _request, response, next) => {
   if (error.type === 'entity.too.large') {
     return response.status(413).json({ error: 'El contenido enviado supera el tamaño permitido' })
   }
-  console.error(error)
+  // El error de JSON mal formado trae el cuerpo crudo (podría incluir una contraseña): no se registra.
+  if (error.type === 'entity.parse.failed') return response.status(400).json({ error: 'El contenido enviado no es JSON válido' })
+  // Solo el stack: console.error(error) imprimiría también propiedades adjuntas al error.
+  console.error(error.stack ?? String(error))
   response.status(500).json({ error: 'Error interno del servidor' })
 })
 

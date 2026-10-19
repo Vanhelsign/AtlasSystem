@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS cuentas_cliente (
   password_hash TEXT NOT NULL,
   password_salt TEXT NOT NULL,
   rol TEXT NOT NULL DEFAULT 'Cliente',
+  -- 1 = al iniciar sesión solo puede cambiar su contraseña (contraseña temporal).
+  debe_cambiar_password INTEGER NOT NULL DEFAULT 0 CHECK (debe_cambiar_password IN (0, 1)),
+  password_actualizada_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (prospecto_id) REFERENCES prospectos(id) ON DELETE CASCADE
 );

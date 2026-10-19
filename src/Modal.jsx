@@ -4,6 +4,9 @@ import { createPortal } from 'react-dom'
 const ENFOCABLES = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 // Modales abiertos, del más antiguo al más reciente: Escape y Tab solo afectan al de arriba.
 const pilaModales = []
+// overflow del body antes de abrir el primer modal; se restaura al cerrar el último, sin importar el orden
+// en que React limpie los modales anidados (al cerrar padre e hijo a la vez, el padre se limpia primero).
+let desbordeOriginal = ''
 
 // Ventana emergente reutilizable. Se cierra con Escape, con clic fuera del panel o con el botón ✕,
 // salvo mientras `ocupado` es verdadero. Si recibe `onEnviar`, el contenido funciona como formulario.
@@ -27,11 +30,11 @@ export default function Modal({
 
   useEffect(() => {
     const identificador = Symbol('modal')
+    if (pilaModales.length === 0) desbordeOriginal = document.body.style.overflow
     pilaModales.push(identificador)
     const enfocadoAntes = document.activeElement
     const inicial = panel.current.querySelector('[data-autofocus]') ?? panel.current.querySelector('input:not([disabled]), select:not([disabled]), textarea:not([disabled])')
     ;(inicial ?? panel.current).focus()
-    const desbordeAnterior = document.body.style.overflow
     document.body.style.overflow = 'hidden'
 
     const alPresionarTecla = (event) => {
@@ -59,7 +62,7 @@ export default function Modal({
     return () => {
       pilaModales.splice(pilaModales.indexOf(identificador), 1)
       document.removeEventListener('keydown', alPresionarTecla)
-      document.body.style.overflow = desbordeAnterior
+      if (pilaModales.length === 0) document.body.style.overflow = desbordeOriginal
       enfocadoAntes?.focus?.()
     }
   }, [])

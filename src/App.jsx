@@ -11,6 +11,7 @@ import TarifasCfe from "./TarifasCfe.jsx";
 import AhorroInversion from "./AhorroInversion.jsx";
 import EmisionAhorro, { ModalEmitirCotizacion } from "./EmisionAhorro.jsx";
 import Modal from "./Modal.jsx";
+import FormularioCambioContrasena, { PantallaCambioObligatorio } from "./CambiarContrasena.jsx";
 import { ESTADOS_MEXICO, nombreEstadoMexico } from "../shared/estadosMexico.js";
 
 // ─────────────────────────────────────────────────────────
@@ -233,7 +234,7 @@ function PortalCliente({ usuarioActual, datos, cargando, error }) {
   );
 }
 
-function DatosPersonales({ datos, cargando, error }) {
+function DatosPersonales({ datos, cargando, error, token }) {
   const prospecto = datos?.prospecto;
   const campos = prospecto ? [
     ["Nombre", prospecto.nombre],
@@ -257,6 +258,10 @@ function DatosPersonales({ datos, cargando, error }) {
           {campos.map(([etiqueta, valor]) => <div key={etiqueta} className="rounded-xl bg-slate-50 p-4"><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{etiqueta}</dt><dd className="mt-1 break-words font-semibold text-slate-900">{mostrarDato(valor)}</dd></div>)}
         </dl>
       )}
+      <section className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm sm:p-7">
+        <div><h2 className="text-xl font-semibold text-slate-900">Cambiar contraseña</h2><p className="mt-1 text-sm text-slate-500">Al cambiarla se cierran las sesiones abiertas en otros dispositivos; esta sigue activa.</p></div>
+        <div className="max-w-md"><FormularioCambioContrasena token={token} /></div>
+      </section>
     </div>
   );
 }
@@ -764,7 +769,8 @@ export default function App() {
   }, [usuarioActual]);
 
   useEffect(() => {
-    if (usuarioActual?.rol !== "Cliente" || !usuarioActual.prospecto_id) return;
+    // Con una contraseña temporal pendiente, el portal no carga datos hasta que se cambie.
+    if (usuarioActual?.rol !== "Cliente" || !usuarioActual.prospecto_id || usuarioActual.debe_cambiar_password) return;
 
     const controller = new AbortController();
     fetch(`/api/portal/prospectos/${usuarioActual.prospecto_id}`, { signal: controller.signal, headers: { Authorization: `Bearer ${usuarioActual.token}` } })
@@ -896,10 +902,15 @@ export default function App() {
     setInventario([]);
   };
 
+  if (usuarioActual.debe_cambiar_password) {
+    return <PantallaCambioObligatorio usuario={usuarioActual} onCerrarSesion={cerrarSesion} onCambiada={() => setUsuarioActual((actual) => ({ ...actual, debe_cambiar_password: false }))} />;
+  }
+
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    // Alto fijo de la ventana: el contenido desplaza dentro de <main> y el menú lateral queda fijo.
+    <div className="flex h-dvh overflow-hidden bg-slate-50 print:block print:h-auto print:overflow-visible">
       {/* Menú lateral (oculto al imprimir) */}
-      <aside className={`${sidebarContraido ? "w-16" : "w-64"} shrink-0 bg-white border-r flex flex-col transition-[width] duration-200 print:hidden`}>
+      <aside className={`${sidebarContraido ? "w-16" : "w-64"} shrink-0 overflow-y-auto bg-white border-r flex flex-col transition-[width] duration-200 print:hidden`}>
         <div className={`border-b ${sidebarContraido ? "px-2 py-4" : "p-5"}`}>
           <div className={`flex items-center ${sidebarContraido ? "flex-col gap-3" : "justify-between gap-2"}`}>
             <p className="text-xl font-bold text-indigo-700" title={sidebarContraido ? "ATLAS CRM" : undefined}>{sidebarContraido ? "A" : "ATLAS CRM"}</p>
@@ -936,7 +947,7 @@ export default function App() {
       </aside>
 
       {/* Contenedor principal */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="min-w-0 flex-1 overflow-y-auto print:overflow-visible">
         {pagina === "dashboard" && (
           <div className="p-6 max-w-4xl mx-auto space-y-6">
             <h2 className="text-xl font-semibold text-slate-900">Dashboard Dinámico</h2>
@@ -986,7 +997,7 @@ export default function App() {
         {pagina === "solicitudes_dimensionamiento" && <SolicitudesDimensionamiento token={usuarioActual.token} inventario={inventario} />}
         
         {pagina === "portal_cliente" && <PortalCliente usuarioActual={usuarioActual} datos={datosPortal} cargando={cargandoPortal} error={errorPortal} />}
-        {pagina === "datos_personales" && <DatosPersonales datos={datosPortal} cargando={cargandoPortal} error={errorPortal} />}
+        {pagina === "datos_personales" && <DatosPersonales datos={datosPortal} cargando={cargandoPortal} error={errorPortal} token={usuarioActual.token} />}
         {pagina === "ahorro_inversion" && <AhorroInversion datos={datosPortal} cargando={cargandoPortal} error={errorPortal} onVolver={() => setPagina("portal_cliente")} />}
         {pagina === "tarifas" && usuarioActual.rol === "Administrador" && <TarifasCfe token={usuarioActual.token} />}
         {pagina === "historial" && <ListaSolicitudes registros={leads} token={usuarioActual.token} usuario={usuarioActual} onActualizarRegistro={(registro) => setLeads((actuales) => actuales.map((item) => item.id === registro.id ? registro : item))} />}

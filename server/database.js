@@ -110,6 +110,11 @@ for (const [tabla, columnas] of [
   ['tarifas_bloques', [
     ['origen_precio', "TEXT CHECK (origen_precio IS NULL OR origen_precio IN ('prueba', 'recibo'))"],
   ]],
+  // Fase 3: cambio de contraseña del cliente. Las cuentas existentes quedan sin cambio obligatorio.
+  ['cuentas_cliente', [
+    ['debe_cambiar_password', 'INTEGER NOT NULL DEFAULT 0 CHECK (debe_cambiar_password IN (0, 1))'],
+    ['password_actualizada_at', 'TEXT'],
+  ]],
 ]) {
   const existentes = db.prepare(`PRAGMA table_info(${tabla})`).all()
   for (const [nombre, tipo] of columnas) {
