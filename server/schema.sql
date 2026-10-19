@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS usuarios_personal (
 CREATE TABLE IF NOT EXISTS productos_catalogo (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   codigo TEXT NOT NULL COLLATE NOCASE UNIQUE,
-  tipo TEXT NOT NULL CHECK (tipo IN ('Panel', 'Inversor', 'Estructura', 'Cableado', 'Mano de obra')),
+  tipo TEXT NOT NULL CHECK (tipo IN ('Panel', 'Inversor', 'Estructura', 'Cableado', 'Mano de obra', 'Batería', 'Extra')),
   modelo TEXT NOT NULL CHECK (length(trim(modelo)) > 0),
   marca TEXT,
   proveedor_id INTEGER REFERENCES proveedores(id) ON DELETE SET NULL,
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS productos_catalogo (
   existencias INTEGER,
   potencia_w REAL CHECK (potencia_w IS NULL OR potencia_w > 0),
   potencia_kw REAL CHECK (potencia_kw IS NULL OR potencia_kw > 0),
+  capacidad_kwh REAL CHECK (capacidad_kwh IS NULL OR capacidad_kwh > 0),
   activo INTEGER NOT NULL DEFAULT 1 CHECK (activo IN (0, 1)),
   motivo_baja TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

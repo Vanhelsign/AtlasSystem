@@ -12,7 +12,7 @@ const ciudades = new Set(['Monterrey', 'Ciudad de México', 'Guadalajara', 'Tiju
 const coberturas = new Set([25, 50, 75, 100])
 const margenesCrecimiento = new Set([10, 20, 30, 40, 50])
 const codigosEstado = new Set(ESTADOS_MEXICO.map((estado) => estado.codigo))
-const tiposProducto = new Set(['Panel', 'Inversor', 'Estructura', 'Cableado', 'Mano de obra'])
+const tiposProducto = new Set(['Panel', 'Inversor', 'Estructura', 'Cableado', 'Mano de obra', 'Batería', 'Extra'])
 const sesiones = new Map()
 
 app.use(express.json({ limit: '100kb' }))
@@ -107,9 +107,9 @@ function permitirRoles(...roles) {
 }
 
 const productoSelect = `
-  SELECT id, codigo, tipo, modelo, costo_unitario,
+  SELECT id, codigo, tipo, modelo, marca, proveedor_id, costo_unitario,
          costo_unitario AS precio, clasificacion, existencias,
-         potencia_w, potencia_kw, activo, motivo_baja, created_at, updated_at
+         potencia_w, potencia_kw, capacidad_kwh, activo, motivo_baja, created_at, updated_at
   FROM productos_catalogo
 `
 
@@ -145,7 +145,20 @@ function validarProducto(value, actual = {}) {
   if (tipo === 'Panel' && potenciaW === null) throw new Error('la potencia en W es obligatoria para paneles')
   if (tipo === 'Inversor' && potenciaKw === null) throw new Error('la potencia en kW es obligatoria para inversores')
 
-  return { tipo, modelo, costoUnitario, clasificacion, existencias, potenciaW, potenciaKw }
+  const capacidadValor = value.capacidad_kwh === undefined ? actual.capacidad_kwh : value.capacidad_kwh
+  const capacidadKwh = capacidadValor === '' || capacidadValor == null ? null : Number(capacidadValor)
+  if (capacidadKwh !== null && (!Number.isFinite(capacidadKwh) || capacidadKwh <= 0)) throw new Error('capacidad en kWh debe ser mayor que cero')
+  if (tipo === 'Batería' && capacidadKwh === null) throw new Error('la capacidad en kWh es obligatoria para baterías')
+
+  const marca = value.marca === undefined ? actual.marca ?? null : textoOpcional(value.marca, 'marca')
+  const proveedorValor = value.proveedor_id === undefined ? actual.proveedor_id : value.proveedor_id
+  let proveedorId = null
+  if (proveedorValor !== '' && proveedorValor != null) {
+    proveedorId = idValido(proveedorValor)
+    if (!proveedorId || !getProveedor(proveedorId)) throw new Error('proveedor no válido')
+  }
+
+  return { tipo, modelo, marca, proveedorId, costoUnitario, clasificacion, existencias, potenciaW, potenciaKw, capacidadKwh }
 }
 
 function getProveedor(id) {
@@ -467,12 +480,12 @@ app.post('/api/productos', autenticar, permitirRoles('Administrador'), (request,
     const codigo = `PROD-${randomBytes(5).toString('hex').toUpperCase()}`
     const id = Number(db.prepare(`
       INSERT INTO productos_catalogo (
-        codigo, tipo, modelo, costo_unitario, clasificacion,
-        existencias, potencia_w, potencia_kw, activo
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+        codigo, tipo, modelo, marca, proveedor_id, costo_unitario, clasificacion,
+        existencias, potencia_w, potencia_kw, capacidad_kwh, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     `).run(
-      codigo, producto.tipo, producto.modelo, producto.costoUnitario,
-      producto.clasificacion, producto.existencias, producto.potenciaW, producto.potenciaKw,
+      codigo, producto.tipo, producto.modelo, producto.marca, producto.proveedorId, producto.costoUnitario,
+      producto.clasificacion, producto.existencias, producto.potenciaW, producto.potenciaKw, producto.capacidadKwh,
     ).lastInsertRowid)
     response.status(201).json(getProducto(id))
   } catch (error) {
@@ -489,12 +502,12 @@ app.patch('/api/productos/:id', autenticar, permitirRoles('Administrador'), (req
     const producto = validarProducto(request.body, actual)
     db.prepare(`
       UPDATE productos_catalogo
-      SET tipo = ?, modelo = ?, costo_unitario = ?, clasificacion = ?, existencias = ?,
-          potencia_w = ?, potencia_kw = ?, updated_at = CURRENT_TIMESTAMP
+      SET tipo = ?, modelo = ?, marca = ?, proveedor_id = ?, costo_unitario = ?, clasificacion = ?, existencias = ?,
+          potencia_w = ?, potencia_kw = ?, capacidad_kwh = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
-      producto.tipo, producto.modelo, producto.costoUnitario, producto.clasificacion,
-      producto.existencias, producto.potenciaW, producto.potenciaKw, id,
+      producto.tipo, producto.modelo, producto.marca, producto.proveedorId, producto.costoUnitario, producto.clasificacion,
+      producto.existencias, producto.potenciaW, producto.potenciaKw, producto.capacidadKwh, id,
     )
     response.json(getProducto(id))
   } catch (error) {

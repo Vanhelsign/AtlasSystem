@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import process from 'node:process'
@@ -84,6 +84,93 @@ for (const [tabla, columnas] of [
     if (!existentes.some((columna) => columna.name === nombre)) {
       db.exec(`ALTER TABLE ${tabla} ADD COLUMN ${nombre} ${tipo};`)
     }
+  }
+}
+
+function respaldarBase(etiqueta) {
+  const directorio = join(dirname(databasePath), 'backups')
+  mkdirSync(directorio, { recursive: true })
+  const fecha = new Date().toISOString().replace(/[:.]/g, '-')
+  const destino = join(directorio, `${basename(databasePath, extname(databasePath))}-${etiqueta}-${fecha}.sqlite`)
+  // VACUUM INTO genera una copia consistente que incluye lo pendiente en el WAL.
+  db.exec(`VACUUM INTO '${destino.replaceAll("'", "''")}';`)
+  console.log(`Respaldo de la base creado en ${destino}`)
+}
+
+// Procedimiento de reconstrucción recomendado por SQLite: las llaves foráneas se desactivan fuera de la
+// transacción para que DROP no afecte a revision_tecnica_items, y se verifican antes de confirmar.
+function reconstruirProductosCatalogo() {
+  const columnas = `id, codigo, tipo, modelo, marca, proveedor_id, costo_unitario, clasificacion,
+    existencias, potencia_w, potencia_kw, activo, motivo_baja, created_at, updated_at`
+  db.exec('PRAGMA foreign_keys = OFF;')
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      const total = db.prepare('SELECT count(*) AS n FROM productos_catalogo').get().n
+      const secuencia = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'productos_catalogo'").get()?.seq ?? 0
+
+      db.exec(`
+        CREATE TABLE productos_catalogo_v1 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          codigo TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          tipo TEXT NOT NULL CHECK (tipo IN ('Panel', 'Inversor', 'Estructura', 'Cableado', 'Mano de obra', 'Batería', 'Extra')),
+          modelo TEXT NOT NULL CHECK (length(trim(modelo)) > 0),
+          marca TEXT,
+          proveedor_id INTEGER REFERENCES proveedores(id) ON DELETE SET NULL,
+          costo_unitario REAL NOT NULL CHECK (costo_unitario >= 0),
+          clasificacion TEXT NOT NULL CHECK (clasificacion IN ('material', 'servicio')),
+          existencias INTEGER,
+          potencia_w REAL CHECK (potencia_w IS NULL OR potencia_w > 0),
+          potencia_kw REAL CHECK (potencia_kw IS NULL OR potencia_kw > 0),
+          capacidad_kwh REAL CHECK (capacidad_kwh IS NULL OR capacidad_kwh > 0),
+          activo INTEGER NOT NULL DEFAULT 1 CHECK (activo IN (0, 1)),
+          motivo_baja TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CHECK (
+            (clasificacion = 'material' AND existencias IS NOT NULL AND existencias >= 0 AND typeof(existencias) = 'integer')
+            OR (clasificacion = 'servicio' AND existencias IS NULL)
+          )
+        );
+      `)
+      db.exec(`INSERT INTO productos_catalogo_v1 (${columnas}) SELECT ${columnas} FROM productos_catalogo;`)
+      db.exec('DROP TABLE productos_catalogo;')
+      db.exec('ALTER TABLE productos_catalogo_v1 RENAME TO productos_catalogo;')
+
+      // Conserva el contador de AUTOINCREMENT para no reutilizar identificadores ya emitidos.
+      db.prepare("DELETE FROM sqlite_sequence WHERE name = 'productos_catalogo'").run()
+      db.prepare(`
+        INSERT INTO sqlite_sequence (name, seq)
+        VALUES ('productos_catalogo', max(?, (SELECT ifnull(max(id), 0) FROM productos_catalogo)))
+      `).run(secuencia)
+
+      if (db.prepare('SELECT count(*) AS n FROM productos_catalogo').get().n !== total) {
+        throw new Error('La reconstrucción de productos_catalogo no conservó todos los registros')
+      }
+      const violaciones = db.prepare('PRAGMA foreign_key_check').all()
+      if (violaciones.length) {
+        throw new Error(`La reconstrucción de productos_catalogo dejó llaves foráneas inválidas: ${JSON.stringify(violaciones)}`)
+      }
+      db.exec('PRAGMA user_version = 1;')
+      db.exec('COMMIT')
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON;')
+  }
+}
+
+// ATLAS v2, Fase B (user_version 1): productos_catalogo acepta Batería y Extra, y agrega capacidad_kwh.
+// Una base nueva ya nace con esa definición desde schema.sql; solo una existente se respalda y reconstruye.
+if (db.prepare('PRAGMA user_version').get().user_version < 1) {
+  const { sql } = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'productos_catalogo'").get()
+  if (sql.includes("'Batería'")) {
+    db.exec('PRAGMA user_version = 1;')
+  } else {
+    respaldarBase('antes-v1')
+    reconstruirProductosCatalogo()
   }
 }
 db.exec(`
