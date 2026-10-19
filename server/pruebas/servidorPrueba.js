@@ -31,10 +31,15 @@ export async function iniciarServidorPrueba(entornoExtra = {}) {
   }
   if (!listo) { proceso.kill(); throw new Error(`El servidor de prueba no arrancó:\n${salida}`) }
 
-  const pedir = async (ruta, { metodo = 'GET', token, cuerpo, crudo } = {}) => {
+  // `ip` simula la IP del navegador que enviaría un proxy local (X-Forwarded-For).
+  const pedir = async (ruta, { metodo = 'GET', token, cuerpo, crudo, ip } = {}) => {
     const respuesta = await fetch(`${url}${ruta}`, {
       method: metodo,
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(ip ? { 'X-Forwarded-For': ip } : {}),
+      },
       body: crudo ?? (cuerpo === undefined ? undefined : JSON.stringify(cuerpo)),
     })
     const texto = await respuesta.text()

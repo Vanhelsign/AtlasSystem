@@ -3,7 +3,8 @@
  * Proyecto Integrador 1 — FIME UANL
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
+import { instalarManejoSesion, MENSAJES_SESION_CERRADA } from "./sesionApi.js";
 import Cotizacion from "./Cotizacion.jsx";
 import SolicitudesDimensionamiento from "./SolicitudesDimensionamiento.jsx";
 import GestionInventario from "./InventarioFisico.jsx";
@@ -50,7 +51,7 @@ const ESTADOS_SOLICITUD = {
 // ─────────────────────────────────────────────────────────
 //  COMPONENTE: LOGIN
 // ─────────────────────────────────────────────────────────
-function Login({ onLogin }) {
+function Login({ onLogin, aviso }) {
   const [email, setEmail] = useState("admin@atlas.com");
   const [password, setPassword] = useState("123");
   const [error, setError] = useState("");
@@ -76,6 +77,7 @@ function Login({ onLogin }) {
           <h1 className="text-3xl font-bold text-indigo-700">ATLAS CRM</h1>
           <p className="text-sm text-slate-500 mt-1">Acceso al sistema (v2.0)</p>
         </div>
+        {aviso && !error && <div role="status" className="bg-amber-50 text-amber-900 text-sm p-3 rounded-lg mb-4">{aviso}</div>}
         {error && <div className="bg-red-50 text-red-600 text-sm p-3 rounded-lg mb-4">{error}</div>}
         <form onSubmit={handleLogin} className="space-y-4">
           <div><label className="block text-sm font-medium mb-1">Correo electrónico</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
@@ -737,6 +739,23 @@ export default function App() {
   const [cargandoPortal, setCargandoPortal] = useState(false);
   const [errorPortal, setErrorPortal] = useState("");
   const [registroExitoso, setRegistroExitoso] = useState(null);
+  const [avisoLogin, setAvisoLogin] = useState("");
+
+  const limpiarSesion = () => {
+    setUsuarioActual(null);
+    setDatosPortal(null);
+    setLeads([]);
+    setInventario([]);
+  };
+
+  // Manejo global de 401: si una petición con el token actual responde 401 (sesión vencida o cerrada por un
+  // cambio de contraseña), se limpia la sesión y el login muestra el motivo. Se instala una sola vez.
+  const tokenSesion = useEffectEvent(() => usuarioActual?.token);
+  const sesionCerrada = useEffectEvent((motivo) => {
+    limpiarSesion();
+    setAvisoLogin(MENSAJES_SESION_CERRADA[motivo] ?? MENSAJES_SESION_CERRADA.sesion_vencida);
+  });
+  useEffect(() => instalarManejoSesion({ tokenActual: () => tokenSesion(), onSesionCerrada: (motivo) => sesionCerrada(motivo) }), []);
 
   useEffect(() => {
     if (!usuarioActual || !["Administrador", "Agente"].includes(usuarioActual.rol)) return;
@@ -830,6 +849,7 @@ export default function App() {
       setCargandoPortal(false);
       setErrorPortal("");
     }
+    setAvisoLogin("");
     setUsuarioActual(usuario);
     setPagina(usuario.rol === 'Cliente' ? 'portal_cliente' : usuario.rol === 'Técnico' ? 'solicitudes_dimensionamiento' : 'dashboard');
   };
@@ -851,7 +871,7 @@ export default function App() {
     return data;
   };
 
-  if (!usuarioActual) return <Login onLogin={autenticarUsuario} />;
+  if (!usuarioActual) return <Login onLogin={autenticarUsuario} aviso={avisoLogin} />;
 
   // Filtrado de menú lateral según el rol
   const getNavItems = () => {
@@ -896,10 +916,8 @@ export default function App() {
 
   const cerrarSesion = () => {
     fetch("/api/logout", { method: "POST", headers: { Authorization: `Bearer ${usuarioActual.token}` } }).catch(() => {});
-    setUsuarioActual(null);
-    setDatosPortal(null);
-    setLeads([]);
-    setInventario([]);
+    setAvisoLogin("");
+    limpiarSesion();
   };
 
   if (usuarioActual.debe_cambiar_password) {

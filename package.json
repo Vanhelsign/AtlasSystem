@@ -9,7 +9,7 @@
     "server:start": "node server/api.js",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node --test \"shared/**/*.test.js\" \"server/**/*.test.js\"",
+    "test": "node --test \"shared/**/*.test.js\" \"server/**/*.test.js\" \"src/**/*.test.js\"",
     "preview": "vite preview"
   },
   "engines": {

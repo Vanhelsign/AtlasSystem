@@ -8,6 +8,9 @@ import { estimarAhorro, faltantesDeTarifa, kwpDePaneles, PARAMETROS_POR_DEFECTO,
 import { horasSolaresPico } from '../shared/irradiacion.js'
 
 const app = express()
+// Solo se confía en X-Forwarded-For cuando la petición llega desde un proxy local (el de Vite en desarrollo).
+// En producción detrás de otro proxy hay que ajustar este valor a la IP o subred de ese proxy.
+app.set('trust proxy', 'loopback')
 const port = Number(process.env.ATLAS_PORT || 3001)
 const estados = new Set(['Nuevo', 'Contactado', 'En seguimiento', 'Cotizado', 'Cerrado ganado', 'Cerrado perdido'])
 const ciudades = new Set(['Monterrey', 'Ciudad de México', 'Guadalajara', 'Tijuana', 'Mérida', 'Otra'])
@@ -101,7 +104,13 @@ function autenticar(request, response, next) {
   const authorization = request.get('authorization') ?? ''
   const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
   const sesion = sesiones.get(token)
-  if (!sesion) return response.status(401).json({ error: 'Sesión requerida o vencida' })
+  if (!sesion) {
+    const revocada = sesionesRevocadas.get(token)
+    if (revocada && Date.now() - revocada.momento < VIGENCIA_REVOCACION_MS && MENSAJES_REVOCACION[revocada.motivo]) {
+      return response.status(401).json({ error: MENSAJES_REVOCACION[revocada.motivo], codigo: revocada.motivo })
+    }
+    return response.status(401).json({ error: 'Sesión requerida o vencida', codigo: 'sesion_vencida' })
+  }
   if (sesion.debe_cambiar_password && !RUTAS_CON_CAMBIO_PENDIENTE.has(`${request.method} ${request.baseUrl}${request.path}`)) {
     return response.status(403).json({ error: 'Debes cambiar tu contraseña temporal antes de continuar', codigo: 'debe_cambiar_password' })
   }
@@ -110,17 +119,72 @@ function autenticar(request, response, next) {
   next()
 }
 
-// Intentos fallidos de cambio de contraseña por cuenta de cliente. Viven en memoria, igual que las sesiones:
-// limitación conocida, el contador se reinicia si el servidor se reinicia.
-const MAX_INTENTOS_CONTRASENA = 5
-const VENTANA_INTENTOS_MS = 10 * 60 * 1000
-const intentosFallidos = new Map()
+// Limitador de intentos fallidos con ventana deslizante por clave. Vive en memoria, igual que las sesiones:
+// limitación conocida, se borra al reiniciar el servidor (también con node --watch).
+const MAX_CLAVES_LIMITADOR = 10_000
+function crearLimitador({ maximo, ventanaMs }) {
+  const registros = new Map()
+  const vigentes = (clave, ahora = Date.now()) => {
+    const lista = (registros.get(clave) ?? []).filter((momento) => ahora - momento < ventanaMs)
+    if (lista.length) registros.set(clave, lista)
+    else registros.delete(clave)
+    return lista
+  }
+  const recortar = () => {
+    if (registros.size <= MAX_CLAVES_LIMITADOR) return
+    for (const clave of [...registros.keys()]) vigentes(clave)
+    // Si siguen sobrando, se descartan las claves más antiguas para no crecer sin límite.
+    for (const clave of registros.keys()) {
+      if (registros.size <= MAX_CLAVES_LIMITADOR) break
+      registros.delete(clave)
+    }
+  }
+  return {
+    maximo,
+    ventanaMinutos: Math.round(ventanaMs / 60000),
+    // Minutos que faltan para desbloquear la clave, o 0 si no está bloqueada.
+    minutosBloqueo(clave) {
+      const lista = vigentes(clave)
+      return lista.length >= maximo ? Math.max(1, Math.ceil((lista[0] + ventanaMs - Date.now()) / 60000)) : 0
+    },
+    registrarFallo(clave) {
+      const lista = vigentes(clave)
+      lista.push(Date.now())
+      registros.set(clave, lista)
+      recortar()
+      return lista.length
+    },
+    reiniciar(clave) { registros.delete(clave) },
+  }
+}
+const minutosTexto = (minutos) => `${minutos} ${minutos === 1 ? 'minuto' : 'minutos'}`
+const enteroEntorno = (nombre, porDefecto) => {
+  const valor = Number(process.env[nombre])
+  return Number.isInteger(valor) && valor > 0 ? valor : porDefecto
+}
 
-function intentosRecientes(cuentaId, ahora = Date.now()) {
-  const recientes = (intentosFallidos.get(cuentaId) ?? []).filter((momento) => ahora - momento < VENTANA_INTENTOS_MS)
-  if (recientes.length) intentosFallidos.set(cuentaId, recientes)
-  else intentosFallidos.delete(cuentaId)
-  return recientes
+// Cambio de contraseña del cliente: 5 contraseñas actuales incorrectas en 10 minutos por cuenta.
+const limiteCambioContrasena = crearLimitador({ maximo: 5, ventanaMs: 10 * 60 * 1000 })
+// Login: por cuenta (correo, exista o no) y por IP. Ajustables por entorno para las pruebas.
+const ventanaLoginMs = enteroEntorno('ATLAS_LOGIN_VENTANA_MIN', 15) * 60 * 1000
+const limiteLoginCuenta = crearLimitador({ maximo: enteroEntorno('ATLAS_LOGIN_MAX_CUENTA', 5), ventanaMs: ventanaLoginMs })
+const limiteLoginIp = crearLimitador({ maximo: enteroEntorno('ATLAS_LOGIN_MAX_IP', 20), ventanaMs: ventanaLoginMs })
+
+// Tokens cerrados por un motivo conocido, para explicar el 401 en la otra ventana. Se descartan a las 24 h.
+const sesionesRevocadas = new Map()
+const VIGENCIA_REVOCACION_MS = 24 * 60 * 60 * 1000
+function revocarSesion(token, motivo) {
+  sesiones.delete(token)
+  sesionesRevocadas.set(token, { motivo, momento: Date.now() })
+  if (sesionesRevocadas.size > MAX_CLAVES_LIMITADOR) {
+    for (const [clave, { momento }] of sesionesRevocadas) {
+      if (sesionesRevocadas.size <= MAX_CLAVES_LIMITADOR && Date.now() - momento < VIGENCIA_REVOCACION_MS) break
+      sesionesRevocadas.delete(clave)
+    }
+  }
+}
+const MENSAJES_REVOCACION = {
+  contrasena_cambiada: 'Tu contraseña se cambió en otro dispositivo. Inicia sesión de nuevo.',
 }
 
 function permitirRoles(...roles) {
@@ -472,6 +536,24 @@ app.post('/api/login', (request, response) => {
   try {
     const email = normalizarEmail(request.body.email)
     const password = textoRequerido(request.body.password, 'contraseña')
+    // Límite de intentos fallidos por IP y por cuenta (correo, exista o no, para no revelar qué cuentas existen).
+    // Se revisa antes de verificar la contraseña: mientras dure el bloqueo, ni la correcta entra.
+    // request.ip es la IP del navegador solo detrás de un proxy local (trust proxy 'loopback').
+    const ip = request.ip ?? 'desconocida'
+    const minutosIp = limiteLoginIp.minutosBloqueo(ip)
+    if (minutosIp) {
+      return response.status(429).json({ error: `Demasiados intentos fallidos desde esta conexión. Espera ${minutosTexto(minutosIp)} e inténtalo de nuevo.`, codigo: 'limite_ip' })
+    }
+    const minutosCuenta = limiteLoginCuenta.minutosBloqueo(email)
+    if (minutosCuenta) {
+      return response.status(429).json({ error: `Demasiados intentos fallidos para esta cuenta. Espera ${minutosTexto(minutosCuenta)} e inténtalo de nuevo.`, codigo: 'limite_cuenta' })
+    }
+    // El 401 de credenciales incorrectas no cambia; solo se cuenta el fallo.
+    const credencialesIncorrectas = () => {
+      limiteLoginIp.registrarFallo(ip)
+      limiteLoginCuenta.registrarFallo(email)
+      return response.status(401).json({ error: 'Credenciales incorrectas' })
+    }
     const personal = db.prepare(`
       SELECT id AS usuario_id, nombre, email, telefono, zona_trabajo, estado_trabajo_codigo,
              password_hash, password_salt, rol, activo
@@ -480,9 +562,8 @@ app.post('/api/login', (request, response) => {
     `).get(email)
     if (personal) {
       if (!personal.activo) return response.status(403).json({ error: 'La cuenta está inactiva' })
-      if (!passwordCoincide(password, personal.password_hash, personal.password_salt)) {
-        return response.status(401).json({ error: 'Credenciales incorrectas' })
-      }
+      if (!passwordCoincide(password, personal.password_hash, personal.password_salt)) return credencialesIncorrectas()
+      limiteLoginCuenta.reiniciar(email)
       const sesion = {
         usuario_id: personal.usuario_id,
         email: personal.email,
@@ -500,9 +581,8 @@ app.post('/api/login', (request, response) => {
       JOIN prospectos p ON p.id = c.prospecto_id
       WHERE c.email = ? COLLATE NOCASE
     `).get(email)
-    if (!cuenta || !passwordCoincide(password, cuenta.password_hash, cuenta.password_salt)) {
-      return response.status(401).json({ error: 'Credenciales incorrectas' })
-    }
+    if (!cuenta || !passwordCoincide(password, cuenta.password_hash, cuenta.password_salt)) return credencialesIncorrectas()
+    limiteLoginCuenta.reiniciar(email)
     const sesion = {
       cuenta_id: cuenta.cuenta_id,
       email: cuenta.email,
@@ -531,10 +611,9 @@ app.post('/api/portal/cambiar-contrasena', autenticar, permitirRoles('Cliente'),
     return response.status(400).json({ error: 'Faltan datos para cambiar la contraseña' })
   }
 
-  const recientes = intentosRecientes(cuentaId)
-  if (recientes.length >= MAX_INTENTOS_CONTRASENA) {
-    const minutos = Math.max(1, Math.ceil((recientes[0] + VENTANA_INTENTOS_MS - Date.now()) / 60000))
-    return response.status(429).json({ error: `Demasiados intentos con una contraseña actual incorrecta. Espera ${minutos} ${minutos === 1 ? 'minuto' : 'minutos'} e inténtalo de nuevo.` })
+  const minutos = limiteCambioContrasena.minutosBloqueo(cuentaId)
+  if (minutos) {
+    return response.status(429).json({ error: `Demasiados intentos con una contraseña actual incorrecta. Espera ${minutosTexto(minutos)} e inténtalo de nuevo.` })
   }
 
   if (!actual) return response.status(400).json({ error: 'Escribe tu contraseña actual', campo: 'actual' })
@@ -547,9 +626,7 @@ app.post('/api/portal/cambiar-contrasena', autenticar, permitirRoles('Cliente'),
   if (!cuenta) return response.status(404).json({ error: 'Cuenta no encontrada' })
   // passwordCoincide recalcula el scrypt con la sal de la cuenta y compara en tiempo constante.
   if (!passwordCoincide(actual, cuenta.password_hash, cuenta.password_salt)) {
-    recientes.push(Date.now())
-    intentosFallidos.set(cuentaId, recientes)
-    const restantes = MAX_INTENTOS_CONTRASENA - recientes.length
+    const restantes = limiteCambioContrasena.maximo - limiteCambioContrasena.registrarFallo(cuentaId)
     return response.status(400).json({
       error: restantes > 0
         ? `La contraseña actual no es correcta. Te ${restantes === 1 ? 'queda 1 intento' : `quedan ${restantes} intentos`} antes de un bloqueo de 10 minutos.`
@@ -564,13 +641,14 @@ app.post('/api/portal/cambiar-contrasena', autenticar, permitirRoles('Cliente'),
     SET password_hash = ?, password_salt = ?, debe_cambiar_password = 0, password_actualizada_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(credencial.hash, credencial.salt, cuentaId)
-  intentosFallidos.delete(cuentaId)
+  limiteCambioContrasena.reiniciar(cuentaId)
 
-  // Cierra las demás sesiones de la cuenta y conserva la actual.
+  // Cierra las demás sesiones de la cuenta y conserva la actual. Quedan marcadas para que la otra ventana
+  // reciba un 401 que explica el motivo.
   let cerradas = 0
-  for (const [token, sesion] of sesiones) {
+  for (const [token, sesion] of [...sesiones]) {
     if (sesion.cuenta_id === cuentaId && sesion.rol === 'Cliente' && token !== request.token) {
-      sesiones.delete(token)
+      revocarSesion(token, 'contrasena_cambiada')
       cerradas += 1
     }
   }
@@ -1817,7 +1895,8 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), (request, resp
   }
 })
 
-app.post('/api/prospectos', (request, response) => {
+// Rutas antiguas de prospectos: desde la corrección de seguridad exigen sesión de Administrador o Agente.
+app.post('/api/prospectos', autenticar, permitirRoles('Administrador', 'Agente'), (request, response) => {
   try {
     const nombre = textoRequerido(request.body.nombre, 'nombre')
     const empresa = textoOpcional(request.body.empresa, 'empresa')
@@ -1838,7 +1917,7 @@ app.post('/api/prospectos', (request, response) => {
   }
 })
 
-app.patch('/api/prospectos/:id', (request, response) => {
+app.patch('/api/prospectos/:id', autenticar, permitirRoles('Administrador', 'Agente'), (request, response) => {
   try {
     const id = idValido(request.params.id)
     if (!id) return response.status(400).json({ error: 'Identificador inválido' })
@@ -1856,7 +1935,7 @@ app.patch('/api/prospectos/:id', (request, response) => {
   }
 })
 
-app.put('/api/prospectos/:id/consumo', (request, response) => {
+app.put('/api/prospectos/:id/consumo', autenticar, permitirRoles('Administrador', 'Agente'), (request, response) => {
   try {
     const id = idValido(request.params.id)
     if (!id) return response.status(400).json({ error: 'Identificador inválido' })

@@ -43,6 +43,12 @@ Irradiación solar:
 - ERA5 es un reanálisis climático; su precisión es menor que la de bases satelitales. Conviene compararlo con una fuente local.
 - La capital representa a todo el estado.
 
+Seguridad:
+
+- Límites del login: 5 intentos fallidos por cuenta y 20 por IP, en una ventana de 15 minutos. Son valores iniciales; se pueden ajustar con `ATLAS_LOGIN_MAX_CUENTA`, `ATLAS_LOGIN_MAX_IP` y `ATLAS_LOGIN_VENTANA_MIN`.
+- Límite del cambio de contraseña del cliente: 5 contraseñas actuales incorrectas en 10 minutos por cuenta (valor fijo en el código).
+- `trust proxy: 'loopback'` supone que, en desarrollo, el único proxy es el de Vite en la misma máquina.
+
 Otros:
 
 - Inventario: el CSV conserva la columna `estado` del documento (Activo/Inactivo); la interfaz la muestra como "Estatus" y la importación acepta también `estatus`.
@@ -53,18 +59,19 @@ Se mantiene al día con cada cambio.
 
 Seguridad y sesiones:
 
-- Rutas sin autenticación desde el commit inicial `c57aaea`: `POST /api/prospectos`, `PATCH /api/prospectos/:id` y `PUT /api/prospectos/:id/consumo`. La interfaz usa la tercera desde la calculadora. Pendiente decidir si se protegen.
 - Las sesiones viven en memoria: se pierden al reiniciar el servidor, incluido cada reinicio de `node --watch`. No tienen caducidad ni renovación.
-- `/api/login` no tiene límite de intentos fallidos (comprobado: 30 contraseñas incorrectas seguidas responden 401 y luego la correcta entra). Hay una propuesta pendiente de aprobación (ver la entrada "Propuesta A y B").
-- El límite de intentos del cambio de contraseña (5 en 10 minutos por cuenta) vive en memoria: se borra al reiniciar el servidor o con `node --watch`.
-- Detrás del proxy de Vite el servidor ve todas las peticiones como si vinieran de localhost; un límite por IP no distinguiría usuarios sin configurar `trust proxy`.
-- Un 401 por sesión cerrada (por ejemplo, tras cambiar la contraseña en otra ventana) se muestra como error dentro del formulario y la pantalla no vuelve al login. Hay una propuesta pendiente de aprobación.
+- Los contadores de intentos (login por cuenta y por IP, y cambio de contraseña) viven en memoria: se borran al reiniciar el servidor o con `node --watch`. En desarrollo, reiniciar el backend desbloquea las cuentas.
+- El bloqueo por cuenta permite que otra persona bloquee una cuenta ajena durante la ventana de 15 minutos con solo fallar el login con ese correo. Es el costo de impedir que se adivine la contraseña.
+- Una red compartida (oficina, escuela, NAT) puede agotar entre varias personas el límite de 20 fallos por IP y bloquear el login para todos los que salen por esa IP durante la ventana.
+- `trust proxy` está configurado como `'loopback'`: solo se acepta `X-Forwarded-For` de un proxy en la misma máquina (el de Vite en desarrollo). En producción, detrás de otro proxy o balanceador, hay que ajustarlo a la IP o subred de ese proxy; si no, todas las peticiones contarán como la IP del proxy y el límite por IP se volverá global.
+- Los tokens cerrados por un cambio de contraseña se recuerdan en memoria hasta 24 horas para explicar el motivo del 401. Tras un reinicio del servidor ese motivo se pierde y el mensaje es el genérico ("Tu sesión se cerró").
+- El login revisa si una cuenta de personal está inactiva antes de verificar la contraseña: responder "La cuenta está inactiva" revela que ese correo existe. Comportamiento existente desde el commit inicial; no se cambió.
 - El indicador "debe cambiar contraseña" se lee al iniciar sesión: una sesión abierta antes de activarlo no se bloquea.
 - El personal de demostración y las cuentas de cliente creadas hasta ahora usan la contraseña `123`, sin cambio obligatorio (decisión explícita). Las cuentas de cliente nuevas también se crean con `123` hasta que se implemente la Fase 4 (contraseñas temporales aleatorias).
 
 Funcionalidad:
 
-- La calculadora (`CalculadoraSolar`) no tiene ningún acceso desde los menús; solo se llega por código.
+- La calculadora (`CalculadoraSolar`) no tiene ningún acceso desde los menús; solo se llega por código. Su código se conserva. La ruta que usa (`PUT /api/prospectos/:id/consumo`) ahora exige sesión de Administrador o Agente, y la calculadora ya enviaba el token.
 - Tickets técnicos, reactivación comercial y evidencias fotográficas siguen en memoria del navegador (`useState`); la evidencia es simulada.
 - No hay envío de correos: la tabla `registro_notificaciones` existe desde la Fase A, pero no se usa. Corresponde a la Fase 4 del plan actual.
 - Las tablas `firmas_cotizacion`, `ordenes_instalacion`, `checklist_evidencias` y `mantenimientos_programados` existen desde la Fase A, pero ninguna ruta las usa todavía.
@@ -81,14 +88,23 @@ Datos:
 
 ## Mapa de rutas de la API
 
-Base: `http://localhost:3001/api` (en desarrollo, Vite reenvía `/api`). "Sesión" = requiere `Authorization: Bearer <token>`. Mientras una cuenta de cliente tenga "debe cambiar contraseña", toda ruta con sesión responde 403 salvo `POST /api/portal/cambiar-contrasena` y `POST /api/logout`.
+Base: `http://localhost:3001/api` (en desarrollo, Vite reenvía `/api` y agrega `X-Forwarded-For`). Todas las rutas salvo `GET /api/health` y `POST /api/login` requieren `Authorization: Bearer <token>`.
+
+Respuestas comunes:
+
+- 401 sin sesión válida, con `codigo`:
+  - `contrasena_cambiada`: la sesión se cerró porque la contraseña se cambió en otra sesión;
+  - `sesion_vencida`: cualquier otro caso.
+
+  El frontend vuelve al login con un aviso ante cualquiera de los dos.
+- 403 con `codigo: debe_cambiar_password`: la cuenta de cliente tiene una contraseña temporal. Toda ruta responde así salvo `POST /api/portal/cambiar-contrasena` y `POST /api/logout`.
 
 | Método | Ruta | Rol permitido | Propósito |
 |---|---|---|---|
 | GET | /api/health | Público | Estado del servidor |
-| POST | /api/login | Público | Inicia sesión de personal o cliente; devuelve token |
+| POST | /api/login | Público | Inicia sesión de personal o cliente; devuelve token. 401 "Credenciales incorrectas"; 429 por límite de intentos (`codigo: limite_cuenta` o `limite_ip`) |
 | POST | /api/logout | Cualquier sesión | Cierra la sesión actual |
-| POST | /api/portal/cambiar-contrasena | Cliente | Cambia la contraseña; cierra las demás sesiones de la cuenta |
+| POST | /api/portal/cambiar-contrasena | Cliente | Cambia la contraseña; cierra las demás sesiones de la cuenta (su 401 dirá `contrasena_cambiada`); 429 tras 5 contraseñas actuales incorrectas en 10 minutos |
 | GET | /api/portal/prospectos/:id | Cliente (solo el suyo) | Datos del portal, solicitud y cotización emitida con su estimación de ahorro guardada |
 | GET | /api/productos | Administrador, Agente, Técnico | Catálogo (el administrador ve también inactivos) |
 | POST | /api/productos | Administrador | Crea producto o servicio |
@@ -113,9 +129,9 @@ Base: `http://localhost:3001/api` (en desarrollo, Vite reenvía `/api`). "Sesió
 | PATCH | /api/personal/:id/estado-trabajo | Administrador | Asigna estado de trabajo |
 | GET | /api/prospectos | Administrador, Agente (solo los suyos) | Lista prospectos y solicitudes |
 | GET | /api/prospectos/:id | Administrador, Agente (solo los suyos) | Detalle de prospecto |
-| POST | /api/prospectos | **Sin autenticación** | Registra prospecto (ruta antigua) |
-| PATCH | /api/prospectos/:id | **Sin autenticación** | Actualiza prospecto (ruta antigua) |
-| PUT | /api/prospectos/:id/consumo | **Sin autenticación** | Consumo para la calculadora (ruta antigua) |
+| POST | /api/prospectos | Administrador, Agente | Registra prospecto (ruta antigua; ninguna pantalla la usa) |
+| PATCH | /api/prospectos/:id | Administrador, Agente | Actualiza prospecto (ruta antigua; ninguna pantalla la usa) |
+| PUT | /api/prospectos/:id/consumo | Administrador, Agente | Consumo para la calculadora (sin acceso desde los menús) |
 | POST | /api/solicitudes | Agente | Registra solicitud, dirección y cuenta del cliente; rechaza estados no reconocidos |
 | GET | /api/solicitudes/:id | Administrador, Agente (solo las suyas) | Detalle de solicitud |
 | GET | /api/agente/solicitudes/:id/estimacion | Agente responsable | Vista previa del ahorro con la tarifa elegida o la sugerida |
@@ -181,29 +197,61 @@ Tablas y en qué commit aparecieron:
 
 ## Historial
 
-### Propuesta A y B: manejo global de 401 y límite de intentos del login
+### A, B y C: manejo global de 401, límite de intentos del login y protección de rutas antiguas
 
-- Estado: **propuesto, pendiente de aprobación. No implementado.** Sin commit.
-- Por qué: tras cambiar la contraseña en otra ventana, la ventana vieja recibe 401 y lo muestra dentro del formulario en lugar de volver al login; y `/api/login` no limita intentos.
-- Reproducción realizada (servidor con base temporal, sin cambiar código):
+- Estado: **implementado. Sin commit.**
+- Por qué:
+  - tras cambiar la contraseña en otra ventana, la ventana vieja recibía 401 y lo mostraba dentro del formulario en lugar de volver al login;
+  - `/api/login` no limitaba intentos;
+  - tres rutas de prospectos respondían sin sesión desde el commit inicial.
+- Archivos:
+  - `server/api.js`: limitador en memoria reutilizable, límites del login, tokens revocados con motivo, `trust proxy`, rutas de prospectos protegidas;
+  - `vite.config.js`: `xfwd: true` en el proxy de `/api`;
+  - `src/sesionApi.js` (nuevo): interceptor global de `fetch`;
+  - `src/App.jsx`: instala el interceptor una sola vez, limpia la sesión y muestra el aviso en el login;
+  - `server/pruebas/servidorPrueba.js`: variables de entorno por prueba y opción `ip` (envía `X-Forwarded-For`);
+  - `server/sesiones.test.js` y `src/sesionApi.test.js` (nuevos);
+  - `package.json`: `npm test` incluye `src/**/*.test.js`.
+- Base de datos: sin cambios. `user_version` sigue igual.
+- A. Manejo global de 401:
+  - el servidor recuerda 24 horas los tokens cerrados por cambio de contraseña y responde 401 con `codigo: contrasena_cambiada` y el mensaje "Tu contraseña se cambió en otro dispositivo. Inicia sesión de nuevo."; cualquier otro 401 de sesión lleva `codigo: sesion_vencida`;
+  - en el cliente, `instalarManejoSesion` envuelve `window.fetch` una sola vez desde `App`. Ante un 401 de `/api/*` (excepto `/api/login`) que lleve el token de la sesión actual, limpia la sesión y vuelve al login con un aviso;
+  - sin cambios: el 401 "Credenciales incorrectas" del login y el 403 `debe_cambiar_password`.
+- B. Límite de intentos del login:
+  - aplica a clientes y a personal (Administrador, Agente, Técnico);
+  - por cuenta: 5 fallos en 15 minutos. Se revisa antes de verificar la contraseña, así que la correcta también recibe 429 mientras dure el bloqueo;
+  - por IP: 20 fallos en 15 minutos;
+  - un correo inexistente cuenta igual que uno existente;
+  - un login correcto reinicia el contador de la cuenta, no el de la IP;
+  - respuesta 429 con `codigo: limite_cuenta` o `limite_ip` y el texto "Demasiados intentos fallidos … Espera N minutos e inténtalo de nuevo.";
+  - `app.set('trust proxy', 'loopback')` en Express y `xfwd: true` en Vite, para que el servidor vea la IP real detrás del proxy de desarrollo. En producción detrás de otro proxy hay que ajustarlo (ver "Limitaciones conocidas");
+  - contadores en memoria; ajustables con `ATLAS_LOGIN_MAX_CUENTA`, `ATLAS_LOGIN_MAX_IP` y `ATLAS_LOGIN_VENTANA_MIN`.
+- C. Rutas antiguas de prospectos:
+  - búsqueda de uso: `POST /api/prospectos` y `PATCH /api/prospectos/:id` no se usan en el frontend; `PUT /api/prospectos/:id/consumo` solo la usa `CalculadoraSolar`, que no tiene acceso desde los menús; en `server/index.js` solo aparecen en código comentado;
+  - como ninguna es alcanzable, las tres exigen ahora sesión de Administrador o Agente (401 sin token, 403 con otro rol);
+  - la calculadora no se borró y ya enviaba el token.
+  - Solo `GET /api/health` y `POST /api/login` quedan públicas.
+- Limitaciones nuevas (detalle en "Limitaciones conocidas"):
+  - el bloqueo por cuenta permite bloquear una cuenta ajena durante la ventana;
+  - una red compartida puede agotar el límite por IP;
+  - los contadores y los tokens revocados se borran al reiniciar el servidor.
+- Cómo probar:
+  - `npm test` (incluye `server/sesiones.test.js` con base temporal y `src/sesionApi.test.js`);
+  - en la interfaz:
+    - abrir el portal de un cliente en dos ventanas y cambiar la contraseña en una; en la otra, cualquier acción vuelve al login con el aviso del cambio;
+    - con un agente, cerrar sesión desde otra pestaña y pulsar "Recargar" en el inventario: vuelve al login con "Tu sesión se cerró";
+    - fallar 5 veces el login con `tecnico@atlas.com`: el sexto intento, aun con `123`, muestra el mensaje de bloqueo.
+  - Para desbloquear en desarrollo: reiniciar el backend (Ctrl+C y `npm run server`, o guardar cualquier archivo del servidor con `node --watch`) o esperar 15 minutos.
+- Reproducción previa (servidor con base temporal, antes del cambio):
   - Cambio de contraseña con la actual incorrecta: intentos 1 a 4 responden 400 con "Te quedan N intentos"; el 5 responde 400 con "Alcanzaste el límite de intentos"; el 6 y los siguientes responden 429, incluso con la contraseña correcta.
   - Un cambio exitoso reinicia el contador. Reiniciar el servidor también lo borra (y cierra las sesiones).
   - `/api/login`: 30 contraseñas incorrectas seguidas responden 401; después la correcta entra.
   - El 401 de una sesión cerrada por cambio de contraseña no distingue el motivo ("Sesión requerida o vencida").
-- Propuesta A:
-  - el servidor anota los tokens cerrados por cambio de contraseña y responde 401 con `codigo: contrasena_cambiada` o `sesion_vencida`;
-  - en el cliente, un interceptor de `fetch` (`src/sesionApi.js`) limpia la sesión y vuelve al login con un aviso ante cualquier 401 de `/api/*` que lleve el token actual, excepto `/api/login`.
-- Propuesta B:
-  - límite por cuenta: 5 fallos en 15 minutos, revisado antes de verificar la contraseña;
-  - límite por IP: 20 fallos en 15 minutos;
-  - respuesta 429 con un mensaje claro;
-  - `trust proxy: 'loopback'` en Express y `xfwd: true` en el proxy de Vite para ver la IP real;
-  - límites ajustables por variables de entorno para las pruebas.
-- Decisiones pendientes:
-  - interceptor de `fetch` o cliente `apiFetch` con migración de todas las llamadas;
-  - si el límite del login aplica también al personal;
-  - si se aprueba `trust proxy` más `xfwd`;
-  - si los contadores siguen en memoria o se guardan en la base.
+- Decisiones tomadas al aprobar la propuesta:
+  - interceptor de `fetch` instalado una sola vez desde `App`, en lugar de migrar todas las llamadas a un cliente `apiFetch`;
+  - el límite del login aplica también a Administrador, Agente y Técnico;
+  - se aprueban `trust proxy: 'loopback'` y `xfwd: true`;
+  - los contadores siguen en memoria.
 
 ### Fase 3: cambio de contraseña del cliente, corrección de scroll y confirmación al cerrar "Editar tarifa"
 
