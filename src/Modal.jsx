@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useId, useRef } from 'react'
+import { useEffect, useEffectEvent, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 const ENFOCABLES = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -7,17 +7,23 @@ const pilaModales = []
 
 // Ventana emergente reutilizable. Se cierra con Escape, con clic fuera del panel o con el botón ✕,
 // salvo mientras `ocupado` es verdadero. Si recibe `onEnviar`, el contenido funciona como formulario.
-export default function Modal({ titulo, descripcion, children, acciones, error, onCerrar, onEnviar, ocupado = false, ancho = 'max-w-lg' }) {
+// Con `confirmarCierre`, cualquier intento de cierre pide confirmar antes de descartar los cambios.
+// `acciones` puede ser una función que recibe { cerrar } para que sus botones usen el mismo cierre.
+export default function Modal({
+  titulo, descripcion, children, acciones, error, onCerrar, onEnviar, ocupado = false, ancho = 'max-w-lg',
+  confirmarCierre = false, mensajeCambios = 'Tienes cambios sin guardar. Si cierras, se perderán.',
+}) {
   const panel = useRef(null)
   const presionFuera = useRef(false)
   const idTitulo = useId()
+  const [confirmandoCierre, setConfirmandoCierre] = useState(false)
 
   const intentarCerrar = () => {
-    if (!ocupado) onCerrar()
+    if (ocupado) return
+    if (confirmarCierre) setConfirmandoCierre(true)
+    else onCerrar()
   }
-  const cerrarConTecla = useEffectEvent(() => {
-    if (!ocupado) onCerrar()
-  })
+  const cerrarConTecla = useEffectEvent(() => intentarCerrar())
 
   useEffect(() => {
     const identificador = Symbol('modal')
@@ -81,9 +87,21 @@ export default function Modal({ titulo, descripcion, children, acciones, error, 
             {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {children}
           </div>
-          {acciones && <div className="flex flex-col-reverse gap-2 border-t bg-slate-50 px-5 py-3 sm:flex-row sm:justify-end">{acciones}</div>}
+          {acciones && <div className="flex flex-col-reverse gap-2 border-t bg-slate-50 px-5 py-3 sm:flex-row sm:justify-end">{typeof acciones === 'function' ? acciones({ cerrar: intentarCerrar }) : acciones}</div>}
         </Contenedor>
       </div>
+      {confirmandoCierre && (
+        <Modal
+          titulo="¿Descartar los cambios?"
+          onCerrar={() => setConfirmandoCierre(false)}
+          acciones={<>
+            <button type="button" data-autofocus onClick={() => setConfirmandoCierre(false)} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Seguir editando</button>
+            <button type="button" onClick={() => { setConfirmandoCierre(false); onCerrar() }} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Descartar y cerrar</button>
+          </>}
+        >
+          <p className="text-sm text-slate-600">{mensajeCambios}</p>
+        </Modal>
+      )}
     </div>,
     document.body,
   )

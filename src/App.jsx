@@ -10,6 +10,7 @@ import GestionInventario from "./InventarioFisico.jsx";
 import TarifasCfe from "./TarifasCfe.jsx";
 import AhorroInversion from "./AhorroInversion.jsx";
 import EmisionAhorro, { ModalEmitirCotizacion } from "./EmisionAhorro.jsx";
+import Modal from "./Modal.jsx";
 import { ESTADOS_MEXICO, nombreEstadoMexico } from "../shared/estadosMexico.js";
 
 // ─────────────────────────────────────────────────────────
@@ -94,29 +95,47 @@ function Login({ onLogin }) {
 // ─────────────────────────────────────────────────────────
 //  MÓDULO: PORTAL TÉCNICO
 // ─────────────────────────────────────────────────────────
+const ESTATUS_TICKET = ["Asignado", "En Progreso", "Detenido", "Completado"];
+
+function ModalTicket({ ticket, onCerrar, onGuardar }) {
+  const [estatus, setEstatus] = useState(ticket.estado);
+  const [evidencia, setEvidencia] = useState(false);
+  return (
+    <Modal
+      titulo={`Ticket #${ticket.id}`}
+      descripcion={`${ticket.cliente} · ${ticket.tipo}`}
+      onCerrar={onCerrar}
+      onEnviar={() => onGuardar(estatus, evidencia)}
+      acciones={<>
+        <button type="button" onClick={onCerrar} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Cancelar</button>
+        <button type="submit" className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700">Guardar</button>
+      </>}
+    >
+      <label className="block text-sm font-medium">Estatus del ticket
+        <select value={estatus} onChange={(event) => setEstatus(event.target.value)} className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm font-normal">
+          {ESTATUS_TICKET.map((opcion) => <option key={opcion}>{opcion}</option>)}
+        </select>
+      </label>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={evidencia} onChange={(event) => setEvidencia(event.target.checked)} />Adjuntar fotografía de evidencia de la visita (simulado)</label>
+      <p className="text-xs text-slate-500">La evidencia todavía es una simulación: no se sube ningún archivo. Los tickets se guardan solo en esta sesión.</p>
+    </Modal>
+  );
+}
+
 function PortalTecnico({ tickets, setTickets }) {
-  
-  const actualizarTicket = (id) => {
-    // 1. Pedimos el nuevo estado
-    const nuevoEstado = window.prompt("Ingresa el nuevo estado del ticket (ej. Completado, En Progreso, Detenido):");
-    
-    if (nuevoEstado) {
-      // 2. Simulamos la subida de evidencia
-      const evidencia = window.confirm("¿Deseas adjuntar una fotografía como evidencia de la visita técnica?");
-      if (evidencia) {
-        alert("Simulando apertura de explorador de archivos... \n\n¡Evidencia fotográfica subida con éxito al servidor!");
-      }
-      
-      // 3. Actualizamos el arreglo global de tickets
-      setTickets(tickets.map(t => 
-        t.id === id ? { ...t, estado: nuevoEstado } : t
-      ));
-    }
+  const [ticketEditado, setTicketEditado] = useState(null);
+  const [mensaje, setMensaje] = useState("");
+
+  const guardarTicket = (estatus, evidencia) => {
+    setTickets(tickets.map((t) => t.id === ticketEditado.id ? { ...t, estado: estatus } : t));
+    setMensaje(`Ticket #${ticketEditado.id} actualizado a «${estatus}».${evidencia ? " Evidencia fotográfica registrada (simulación)." : ""}`);
+    setTicketEditado(null);
   };
 
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
       <h2 className="text-xl font-semibold">Mis Instalaciones y Tickets Asignados</h2>
+      {mensaje && <p role="status" className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{mensaje}</p>}
       <div className="grid gap-4">
         {tickets.map(t => (
           <div key={t.id} className="bg-white p-4 rounded-xl border flex justify-between items-center">
@@ -132,16 +151,17 @@ function PortalTecnico({ tickets, setTickets }) {
               }`}>
                 {t.estado}
               </span>
-              <button 
-                onClick={() => actualizarTicket(t.id)} 
+              <button
+                onClick={() => { setMensaje(""); setTicketEditado(t); }}
                 className="bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-indigo-100 transition-colors"
               >
-                Actualizar Estado / Subir Evidencia
+                Actualizar estatus / Subir evidencia
               </button>
             </div>
           </div>
         ))}
       </div>
+      {ticketEditado && <ModalTicket ticket={ticketEditado} onCerrar={() => setTicketEditado(null)} onGuardar={guardarTicket} />}
     </div>
   );
 }
@@ -257,6 +277,8 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
   const [tarifaEmision, setTarifaEmision] = useState("");
   const [estimacionEmision, setEstimacionEmision] = useState(null);
   const [confirmandoEmision, setConfirmandoEmision] = useState(false);
+  // Margen y precio con los que se abrió el detalle; sirven para saber si hay cambios sin guardar.
+  const [valoresIniciales, setValoresIniciales] = useState(null);
 
   const estadoDe = (registro) => {
     if (!registro.solicitud_id) return "informacion_incompleta";
@@ -285,6 +307,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
     setMotivoDevolucion("");
     setTarifaEmision("");
     setEstimacionEmision(null);
+    setValoresIniciales(null);
     if (!registro.solicitud_id) return;
     try {
       const response = await fetch(`/api/solicitudes/${registro.solicitud_id}`, {
@@ -296,6 +319,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
       const costoInterno = data.revision_tecnica?.items?.reduce((total, item) => total + Number(item.subtotal), 0) ?? 0;
       setMargenComercial(25);
       setPrecioVenta((costoInterno * 1.25).toFixed(2));
+      setValoresIniciales({ margen: "25", precio: (costoInterno * 1.25).toFixed(2) });
     } catch (error) {
       setErrorDetalle(error.message);
     }
@@ -305,6 +329,12 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
   const listaParaRevision = usuario.rol === "Agente"
     && solicitudDetalle?.estado_flujo === "en_preparacion"
     && solicitudDetalle?.revision_tecnica?.estado === "completada";
+  const hayCambiosSinGuardar = listaParaRevision && Boolean(valoresIniciales) && (
+    String(margenComercial) !== valoresIniciales.margen
+    || precioVenta !== valoresIniciales.precio
+    || tarifaEmision !== ""
+    || motivoDevolucion.trim() !== ""
+  );
 
   const cambiarMargen = (valor) => {
     setMargenComercial(valor);
@@ -364,7 +394,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
     <div className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div><h1 className="text-2xl font-bold text-slate-900">Cotizaciones Emitidas</h1><p className="mt-1 text-sm text-slate-500">Solicitudes persistidas; una solicitud sin precio no se presenta como cotización emitida.</p></div>
-        <label className="text-sm font-medium text-slate-700">Filtrar por estado
+        <label className="text-sm font-medium text-slate-700">Filtrar por estatus
           <select value={filtro} onChange={(event) => setFiltro(event.target.value)} className="mt-1 block w-full rounded-lg border bg-white px-3 py-2 sm:w-72">
             <option value="todos">Todos</option>
             {Object.entries(ESTADOS_SOLICITUD).map(([valor, etiqueta]) => <option key={valor} value={valor}>{etiqueta}</option>)}
@@ -374,7 +404,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
 
       <div className="overflow-x-auto rounded-xl border bg-white">
         <table className="min-w-[850px] w-full text-left text-sm">
-          <thead className="border-b bg-slate-50 text-xs uppercase text-slate-600"><tr><th className="p-3">Prospecto</th><th className="p-3">Fecha de solicitud</th><th className="p-3">Consumo</th><th className="p-3">Agente</th><th className="p-3">Estado</th><th className="p-3">Detalle</th></tr></thead>
+          <thead className="border-b bg-slate-50 text-xs uppercase text-slate-600"><tr><th className="p-3">Prospecto</th><th className="p-3">Fecha de solicitud</th><th className="p-3">Consumo</th><th className="p-3">Agente</th><th className="p-3">Estatus</th><th className="p-3">Detalle</th></tr></thead>
           <tbody className="divide-y">
             {visibles.map((registro) => <tr key={registro.id}>
               <td className="p-3 font-semibold text-slate-900">{registro.nombre}</td>
@@ -386,14 +416,21 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
             </tr>)}
           </tbody>
         </table>
-        {visibles.length === 0 && <p className="p-6 text-center text-sm text-slate-500">No hay registros con este estado.</p>}
+        {visibles.length === 0 && <p className="p-6 text-center text-sm text-slate-500">No hay registros con este estatus.</p>}
       </div>
 
-      {registroDetalle && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true">
-        <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
-          <div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-bold">Detalle de la solicitud</h2><p className="text-sm text-slate-500">Consulta de solo lectura</p></div><button onClick={() => setRegistroDetalle(null)} className="rounded-lg border px-3 py-1 text-sm">Cerrar</button></div>
-          {errorDetalle && <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{errorDetalle}</p>}
-          {mensajeDetalle && <p className="mt-4 rounded-lg bg-green-50 p-3 text-sm text-green-700">{mensajeDetalle}</p>}
+      {registroDetalle && <Modal
+        titulo="Detalle de la solicitud"
+        descripcion="Consulta de solo lectura"
+        ancho="max-w-2xl"
+        error={errorDetalle}
+        ocupado={procesandoRevision}
+        onCerrar={() => setRegistroDetalle(null)}
+        confirmarCierre={hayCambiosSinGuardar}
+        mensajeCambios="Cambiaste el margen, el precio, la tarifa o el motivo de devolución y no los has enviado. Si cierras, se perderán."
+        acciones={({ cerrar }) => <button type="button" onClick={cerrar} disabled={procesandoRevision} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cerrar</button>}
+      >
+          {mensajeDetalle && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{mensajeDetalle}</p>}
           <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
             <div><dt className="text-slate-500">Prospecto</dt><dd className="font-semibold">{registroDetalle.nombre}</dd></div>
             <div><dt className="text-slate-500">Estatus</dt><dd className="font-semibold">{ESTADOS_SOLICITUD[estadoDe(registroDetalle)]}</dd></div>
@@ -411,8 +448,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
           {solicitudDetalle?.cotizacion && <section className="mt-5 rounded-lg border border-green-200 bg-green-50 p-4 text-sm"><h3 className="font-bold text-green-900">Cotización enviada al prospecto</h3><p className="mt-1 text-green-800">Versión {solicitudDetalle.cotizacion.version} · Precio final: <b>{fmt(solicitudDetalle.cotizacion.precio_venta)}</b></p><p className="text-xs text-green-700">Emitida: {fechaSolicitud(solicitudDetalle.cotizacion.emitida_at)}</p></section>}
           {listaParaRevision && <section className="mt-6 space-y-4 border-t pt-5"><div><h3 className="font-semibold">Revisión del agente</h3><p className="text-xs text-slate-500">El margen propone un precio, pero puedes confirmar otro precio final antes de enviarlo.</p></div><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium">Margen comercial (%)<input type="number" step="0.01" value={margenComercial} onChange={(event) => cambiarMargen(event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 font-normal"/></label><label className="text-sm font-medium">Precio final de venta<input type="number" min="0.01" step="0.01" value={precioVenta} onChange={(event) => setPrecioVenta(event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 font-normal"/></label></div><div className="rounded-lg bg-slate-50 p-3 text-sm">Costo interno: <b>{fmt(costoInterno)}</b> · Precio a confirmar: <b>{fmt(Number(precioVenta) || 0)}</b></div><EmisionAhorro token={token} solicitudId={registroDetalle.solicitud_id} precioVenta={precioVenta} tarifaId={tarifaEmision} onTarifa={setTarifaEmision} onEstimacion={setEstimacionEmision} /><label className="block text-sm font-medium">Motivo para devolver a corrección<textarea value={motivoDevolucion} onChange={(event) => setMotivoDevolucion(event.target.value)} rows="3" className="mt-1 w-full rounded-lg border px-3 py-2 font-normal" placeholder="Describe qué debe corregir el técnico"/></label><div className="flex flex-col gap-2 sm:flex-row"><button disabled={procesandoRevision} onClick={aprobar} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-bold text-white disabled:bg-green-300">Aprobar y enviar al prospecto</button><button disabled={procesandoRevision} onClick={devolver} className="rounded-lg border border-amber-500 px-4 py-2 text-sm font-bold text-amber-800 disabled:opacity-50">Devolver para corrección</button></div></section>}
           {confirmandoEmision && <ModalEmitirCotizacion precio={Number(precioVenta)} supuestos={estimacionEmision} onCerrar={() => setConfirmandoEmision(false)} onConfirmar={confirmarEmision} />}
-        </div>
-      </div>}
+      </Modal>}
     </div>
   );
 }
@@ -541,9 +577,11 @@ function CalculadoraSolar({ onCotizar, inventario, prospecto, onGuardarConsumo }
     perdidas: String(prospecto?.perdidas ?? 80),
   });
   const [resultado, setResultado] = useState(null);
+  const [errorCalculo, setErrorCalculo] = useState("");
 
   const calcular = async () => {
-    if (!form.consumo || Number(form.consumo) <= 0) return alert("Ingresa un consumo mayor que cero.");
+    setErrorCalculo("");
+    if (!form.consumo || Number(form.consumo) <= 0) return setErrorCalculo("Ingresa un consumo mayor que cero.");
 
     if (!solicitudPersistida) {
       try {
@@ -553,20 +591,20 @@ function CalculadoraSolar({ onCotizar, inventario, prospecto, onGuardarConsumo }
           perdidas: Number(form.perdidas),
         });
       } catch (error) {
-        return alert(error.message);
+        return setErrorCalculo(error.message);
       }
     }
 
     const irr = IRRADIACION[form.ciudad];
     const kwp_necesarios = (form.consumo / 30) / (irr * (form.perdidas/100));
     const panel = inventario.find(c => c.activo && c.clasificacion === "material" && c.tipo === "Panel");
-    if(!panel) return alert("Error: No hay paneles registrados en el inventario.");
+    if(!panel) return setErrorCalculo("Error: No hay paneles registrados en el inventario.");
     
     const n_paneles = Math.ceil((kwp_necesarios * 1000) / panel.potencia_w);
-    if(n_paneles > panel.existencias) return alert(`Stock insuficiente. Necesitas ${n_paneles} paneles, pero hay ${panel.existencias} disponibles.`);
+    if(n_paneles > panel.existencias) return setErrorCalculo(`Stock insuficiente. Necesitas ${n_paneles} paneles, pero hay ${panel.existencias} disponibles.`);
 
     const inversor = inventario.find(c => c.activo && c.clasificacion === "material" && c.tipo === "Inversor");
-    if(!inversor) return alert("Error: No hay inversores activos en el catálogo.");
+    if(!inversor) return setErrorCalculo("Error: No hay inversores activos en el catálogo.");
     setResultado({ panel, n_paneles, kwp_real: (n_paneles * panel.potencia_w) / 1000, inversor, produccion: (n_paneles * panel.potencia_w) / 1000 * irr * 365 * (form.perdidas/100) });
   };
 
@@ -588,6 +626,7 @@ function CalculadoraSolar({ onCotizar, inventario, prospecto, onGuardarConsumo }
           </>
         )}
         <button onClick={calcular} className="col-span-2 bg-indigo-600 text-white py-2 rounded text-sm mt-2">Calcular sistema</button>
+        {errorCalculo && <p role="alert" className="col-span-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">{errorCalculo}</p>}
       </div>
       {resultado && (
         <div className="bg-green-50 rounded-xl border border-green-200 p-6">
@@ -692,6 +731,7 @@ export default function App() {
   const [datosPortal, setDatosPortal] = useState(null);
   const [cargandoPortal, setCargandoPortal] = useState(false);
   const [errorPortal, setErrorPortal] = useState("");
+  const [registroExitoso, setRegistroExitoso] = useState(null);
 
   useEffect(() => {
     if (!usuarioActual || !["Administrador", "Agente"].includes(usuarioActual.rol)) return;
@@ -762,7 +802,7 @@ export default function App() {
 
     setLeads((actuales) => [data.registro, ...actuales]);
     setErrorApi("");
-    alert(`Solicitud registrada correctamente.\nPuedes consultarla en Cotizaciones Emitidas.\nCuenta del cliente: ${data.registro.email}\nContraseña temporal: 123`);
+    setRegistroExitoso({ email: data.registro.email });
     return data;
   };
 
@@ -918,6 +958,21 @@ export default function App() {
           </div>
         )}
         
+        {registroExitoso && <Modal
+          titulo="Solicitud registrada"
+          descripcion="Puedes consultarla en Cotizaciones Emitidas."
+          onCerrar={() => setRegistroExitoso(null)}
+          acciones={<>
+            <button type="button" onClick={() => setRegistroExitoso(null)} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Registrar otra</button>
+            <button type="button" data-autofocus onClick={() => { setRegistroExitoso(null); setPagina("historial"); }} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700">Ver en Cotizaciones Emitidas</button>
+          </>}
+        >
+          <dl className="grid gap-3 text-sm sm:grid-cols-2">
+            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Cuenta del cliente</dt><dd className="break-all font-semibold">{registroExitoso.email}</dd></div>
+            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Contraseña temporal</dt><dd className="font-semibold">123</dd></div>
+          </dl>
+        </Modal>}
+
         {pagina === "leads" && <Cotizacion
           errorApi={errorApi}
           onRegistrar={registrarSolicitud}

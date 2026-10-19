@@ -13,7 +13,7 @@ const LIMITE_TAMANO_ARCHIVO = 5 * 1024 * 1024
 const ALIAS_COLUMNAS = {
   codigo: 'codigo', clase: 'clase', clasificacion: 'clase', tipo: 'tipo', modelo: 'modelo',
   costo: 'costo', costo_base: 'costo', costo_unitario: 'costo', existencias: 'existencias', stock: 'existencias',
-  estado: 'estado', marca: 'marca', capacidad_kwh: 'capacidad_kwh', potencia_w: 'potencia_w', potencia_kw: 'potencia_kw',
+  estado: 'estado', estatus: 'estado', marca: 'marca', capacidad_kwh: 'capacidad_kwh', potencia_w: 'potencia_w', potencia_kw: 'potencia_kw',
 }
 
 const claveEncabezado = (valor) => String(valor ?? '')

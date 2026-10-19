@@ -20,7 +20,7 @@ const RESULTADOS = {
 };
 const NOMBRES_CAMPO = {
   tipo: "Tipo", modelo: "Modelo", clasificacion: "Clase", costo_unitario: "Costo", existencias: "Existencias",
-  marca: "Marca", capacidad_kwh: "Capacidad (kWh)", potencia_w: "Potencia (W)", potencia_kw: "Potencia (kW)", activo: "Estado",
+  marca: "Marca", capacidad_kwh: "Capacidad (kWh)", potencia_w: "Potencia (W)", potencia_kw: "Potencia (kW)", activo: "Estatus",
 };
 
 const tamanoLegible = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -33,7 +33,7 @@ const claveBusqueda = (valor) => String(valor ?? "").normalize("NFD").replace(/[
 const fechaAlta = (valor) => valor ? new Date(`${valor.replace(" ", "T")}Z`).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 const COLUMNAS_FILA = [
   ["codigo", "Código"], ["clase", "Clase"], ["tipo", "Tipo"], ["modelo", "Modelo"], ["costo", "Costo"], ["existencias", "Existencias"],
-  ["estado", "Estado"], ["marca", "Marca"], ["capacidad_kwh", "Capacidad (kWh)"], ["potencia_w", "Potencia (W)"], ["potencia_kw", "Potencia (kW)"],
+  ["estado", "Estatus"], ["marca", "Marca"], ["capacidad_kwh", "Capacidad (kWh)"], ["potencia_w", "Potencia (W)"], ["potencia_kw", "Potencia (kW)"],
 ];
 
 function leerPreferencia(clave, porDefecto) {
@@ -356,7 +356,7 @@ function TablaCatalogo({ inventario, proveedores, isAdmin, onEditar, onBaja, onR
         <thead className="border-b bg-slate-50">
           <tr>
             <th className="p-3 text-left">Código</th><th className="p-3 text-left">Clase</th><th className="p-3 text-left">Tipo / Modelo</th>
-            <th className="p-3 text-left">Costo base</th><th className="p-3 text-left">Existencias</th><th className="p-3 text-left">Estado</th>
+            <th className="p-3 text-left">Costo base</th><th className="p-3 text-left">Existencias</th><th className="p-3 text-left">Estatus</th>
             {isAdmin && <th className="p-3 text-left">Acciones</th>}
           </tr>
         </thead>
@@ -441,7 +441,7 @@ function SeccionArchivo({ archivo, revisando, onRevisar, onCambiar, onDescartar 
         </div>
       </div>
       <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-xs text-slate-500">Columnas: código, clase, tipo, modelo, costo, existencias y estado. Opcionales: marca, capacidad_kwh, potencia_w y potencia_kw. Acepta .csv y .xlsx.</p>
+        <p className="text-xs text-slate-500">Columnas: código, clase, tipo, modelo, costo, existencias y estado (el estatus: Activo o Inactivo; también se acepta «estatus»). Opcionales: marca, capacidad_kwh, potencia_w y potencia_kw. Acepta .csv y .xlsx.</p>
         <button type="button" onClick={onRevisar} disabled={problemas.length > 0 || revisando} className={`${BOTON_PRIMARIO} shrink-0`}>
           {revisando ? "Revisando…" : `Revisar ${plural(totalFilas, "fila", "filas")}`}
         </button>
@@ -701,7 +701,7 @@ function ModalFilaImportacion({ original, actual, revisionFila, onCerrar, onGuar
         <label className={ETIQUETA}>Modelo<input value={form.modelo} onChange={cambiar("modelo")} className={CAMPO} /></label>
         <label className={ETIQUETA}>Costo (MXN)<input value={form.costo} onChange={cambiar("costo")} inputMode="decimal" className={CAMPO} /></label>
         <label className={ETIQUETA}>Existencias<input value={form.existencias} onChange={cambiar("existencias")} placeholder="Servicios: vacío o No aplica" className={CAMPO} /></label>
-        {selector("estado", "Estado", [["Activo", "Activo"], ["Inactivo", "Inactivo"]])}
+        {selector("estado", "Estatus", [["Activo", "Activo"], ["Inactivo", "Inactivo"]])}
         <label className={ETIQUETA}>Marca<input value={form.marca} onChange={cambiar("marca")} placeholder="Vacío conserva la actual" className={CAMPO} /></label>
         <label className={ETIQUETA}>Capacidad (kWh)<input value={form.capacidad_kwh} onChange={cambiar("capacidad_kwh")} inputMode="decimal" placeholder="Baterías" className={CAMPO} /></label>
         <label className={ETIQUETA}>Potencia (W)<input value={form.potencia_w} onChange={cambiar("potencia_w")} inputMode="decimal" placeholder="Paneles" className={CAMPO} /></label>
@@ -753,7 +753,7 @@ function ModalExportar({ total, onCerrar, onExportar }) {
           </label>
         ))}
       </fieldset>
-      <p className="text-xs text-slate-500">Incluye las mismas 11 columnas que acepta la importación: código, clase, tipo, modelo, costo, existencias, estado, marca, capacidad_kwh, potencia_w y potencia_kw.</p>
+      <p className="text-xs text-slate-500">Incluye las mismas 11 columnas que acepta la importación: código, clase, tipo, modelo, costo, existencias, estado (estatus Activo o Inactivo), marca, capacidad_kwh, potencia_w y potencia_kw.</p>
     </Modal>
   );
 }

@@ -653,8 +653,8 @@ function planificarFilaImportacion(entrada, indice, actualPorCodigo, filasPorCod
 
   const clavesEstado = { activo: 1, inactivo: 0 }
   const activo = textoEstado ? clavesEstado[claveImportacion(textoEstado)] : undefined
-  if (!textoEstado) errores.push('estado es obligatorio')
-  else if (activo === undefined) errores.push('estado debe ser Activo o Inactivo')
+  if (!textoEstado) errores.push('el estatus (columna estado) es obligatorio')
+  else if (activo === undefined) errores.push('el estatus (columna estado) debe ser Activo o Inactivo')
 
   const actual = codigo ? actualPorCodigo.get(codigo.toLowerCase()) : undefined
   const base = {

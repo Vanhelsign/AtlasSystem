@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import Modal from './Modal.jsx'
 
 const numero = (valor, unidad = '') => valor === null || valor === undefined
   ? 'No registrado'
@@ -30,6 +31,8 @@ export default function SolicitudesDimensionamiento({ token, inventario }) {
   const [procesando, setProcesando] = useState(false)
   const [error, setError] = useState('')
   const [mensaje, setMensaje] = useState('')
+  const [confirmandoCompletar, setConfirmandoCompletar] = useState(false)
+  const [errorCompletar, setErrorCompletar] = useState('')
 
   const api = async (url, options = {}) => {
     const response = await fetch(url, {
@@ -118,17 +121,21 @@ export default function SolicitudesDimensionamiento({ token, inventario }) {
     'Borrador guardado correctamente.',
   )
 
-  const completar = async () => {
+  const pedirCompletar = () => {
     if (items.length === 0) return setError('Agrega al menos un material o servicio antes de completar.')
-    if (!window.confirm('¿Completar la revisión? Después ya no podrá editarse.')) return
-    setProcesando(true); setError(''); setMensaje('')
+    setError(''); setErrorCompletar(''); setConfirmandoCompletar(true)
+  }
+
+  const completar = async () => {
+    setProcesando(true); setErrorCompletar(''); setMensaje('')
     try {
       const guardado = await api(`/api/tecnico/solicitudes/${detalle.id}/borrador`, { method: 'PUT', body: JSON.stringify({ items: payloadItems() }) })
       const completado = await api(`/api/tecnico/solicitudes/${guardado.id}/completar`, { method: 'POST', body: '{}' })
       actualizarLocal(completado)
+      setConfirmandoCompletar(false)
       setMensaje('Revisión técnica completada. Está disponible para preparar la cotización final.')
     } catch (apiError) {
-      setError(apiError.message)
+      setErrorCompletar(apiError.message)
     } finally {
       setProcesando(false)
     }
@@ -187,12 +194,26 @@ export default function SolicitudesDimensionamiento({ token, inventario }) {
               const excede = item.clasificacion_aplicada === 'material' && Number(item.cantidad) > Number(existencias)
               return <tr key={item.producto_id} className="border-t"><td className="p-2"><b>{item.tipo_aplicado}</b><br/><span className="text-slate-500">{item.modelo_aplicado}</span>{excede && <span className="mt-1 block text-xs font-bold text-amber-700">Aviso: supera las {existencias} unidades disponibles.</span>}</td><td className="p-2 text-center">{item.clasificacion_aplicada === 'servicio' ? 'Servicio' : 'Material'}</td><td className="p-2 text-center">{puedeEditar ? <input type="number" min="1" step="1" value={item.cantidad} onChange={(event) => cambiarCantidad(item.producto_id, event.target.value)} className="w-20 rounded border px-2 py-1"/> : item.cantidad}</td><td className="p-2 text-right">{moneda(item.costo_unitario_aplicado)}</td><td className="p-2 text-right font-semibold">{moneda(Number(item.costo_unitario_aplicado) * Number(item.cantidad))}</td>{puedeEditar && <td className="p-2 text-center"><button onClick={() => quitar(item.producto_id)} className="text-xs font-bold text-red-600">Quitar</button></td>}</tr>
             })}</tbody></table>{items.length === 0 && <p className="p-5 text-center text-sm text-slate-500">Todavía no hay renglones en la propuesta.</p>}</div>
-            <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between"><p className="text-lg font-bold">Costo total técnico: {moneda(total)}</p>{puedeEditar && <div className="flex flex-col gap-2 sm:flex-row"><button disabled={procesando} onClick={guardar} className="rounded-lg border border-indigo-600 px-4 py-2 text-sm font-bold text-indigo-700 disabled:opacity-50">Guardar borrador</button><button disabled={procesando} onClick={completar} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-bold text-white disabled:bg-green-300">Completar revisión técnica</button></div>}</div>
+            <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between"><p className="text-lg font-bold">Costo total técnico: {moneda(total)}</p>{puedeEditar && <div className="flex flex-col gap-2 sm:flex-row"><button disabled={procesando} onClick={guardar} className="rounded-lg border border-indigo-600 px-4 py-2 text-sm font-bold text-indigo-700 disabled:opacity-50">Guardar borrador</button><button disabled={procesando} onClick={pedirCompletar} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-bold text-white disabled:bg-green-300">Completar revisión técnica</button></div>}</div>
             {!puedeEditar && detalle.revision_tecnica_estado === 'en_revision' && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">La revisión está a cargo de {detalle.tecnico_responsable}; solo esa persona puede editarla.</p>}
           </div>}
         </div>}
       </section>
     </div>
+    {confirmandoCompletar && <Modal
+      titulo="¿Completar la revisión técnica?"
+      descripcion={detalle?.prospecto_nombre}
+      error={errorCompletar}
+      ocupado={procesando}
+      onCerrar={() => setConfirmandoCompletar(false)}
+      onEnviar={completar}
+      acciones={<>
+        <button type="button" data-autofocus onClick={() => setConfirmandoCompletar(false)} disabled={procesando} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">Seguir editando</button>
+        <button type="submit" disabled={procesando} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-bold text-white disabled:bg-green-300">{procesando ? 'Completando…' : 'Completar revisión'}</button>
+      </>}
+    >
+      <p className="text-sm text-slate-600">Se guardará la propuesta con {items.length} {items.length === 1 ? 'renglón' : 'renglones'} y un costo técnico de <b>{moneda(total)}</b>. Después ya no podrá editarse; el agente podrá aprobarla o devolverla para corrección.</p>
+    </Modal>}
   </div>
 }
 
