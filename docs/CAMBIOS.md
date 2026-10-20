@@ -49,6 +49,14 @@ Seguridad:
 - Límite del cambio de contraseña del cliente: 5 contraseñas actuales incorrectas en 10 minutos por cuenta (valor fijo en el código).
 - `trust proxy: 'loopback'` supone que, en desarrollo, el único proxy es el de Vite en la misma máquina.
 
+Correo (Fase 4):
+
+- Contraseña temporal de 12 caracteres sin caracteres ambiguos (unos 69 bits de entropía).
+- Tiempo máximo de 15 s por envío.
+- Remitente por defecto `ATLAS CRM <no-responder@atlas.example>` y `APP_URL` por defecto `http://localhost:5173`, mientras no se configuren en `.env`.
+- "Aceptado" significa que el servidor SMTP recibió el mensaje, no que llegó al buzón. `entregado` no se usa.
+- El correo de "cotización lista" va a la cuenta de cliente; si no existe, al correo del prospecto.
+
 Otros:
 
 - Inventario: el CSV conserva la columna `estado` del documento (Activo/Inactivo); la interfaz la muestra como "Estatus" y la importación acepta también `estatus`.
@@ -67,18 +75,22 @@ Seguridad y sesiones:
 - Los tokens cerrados por un cambio de contraseña se recuerdan en memoria hasta 24 horas para explicar el motivo del 401. Tras un reinicio del servidor ese motivo se pierde y el mensaje es el genérico ("Tu sesión se cerró").
 - El login revisa si una cuenta de personal está inactiva antes de verificar la contraseña: responder "La cuenta está inactiva" revela que ese correo existe. Comportamiento existente desde el commit inicial; no se cambió.
 - El indicador "debe cambiar contraseña" se lee al iniciar sesión: una sesión abierta antes de activarlo no se bloquea.
-- El personal de demostración y las cuentas de cliente creadas hasta ahora usan la contraseña `123`, sin cambio obligatorio (decisión explícita). Las cuentas de cliente nuevas también se crean con `123` hasta que se implemente la Fase 4 (contraseñas temporales aleatorias).
+- El personal de demostración y las cuentas de cliente creadas antes de la Fase 4 usan la contraseña `123`, sin cambio obligatorio (decisión explícita). Las cuentas de cliente nuevas reciben una contraseña temporal por correo.
+- En modo simulado, cada `.eml` de credenciales guarda la contraseña temporal en texto claro dentro de `data/correos/`. La carpeta está en `.gitignore`, pero cualquiera con acceso a la máquina puede leerla; conviene vaciarla cuando ya no se necesite.
+- Hasta la Fase 4b no hay forma de reenviar credenciales: si el correo de una cuenta nueva falla, el cliente no puede entrar hasta que exista el reenvío (o se corrija a mano en la base).
 
 Funcionalidad:
 
 - La calculadora (`CalculadoraSolar`) no tiene ningún acceso desde los menús; solo se llega por código. Su código se conserva. La ruta que usa (`PUT /api/prospectos/:id/consumo`) ahora exige sesión de Administrador o Agente, y la calculadora ya enviaba el token.
 - Tickets técnicos, reactivación comercial y evidencias fotográficas siguen en memoria del navegador (`useState`); la evidencia es simulada.
-- No hay envío de correos: la tabla `registro_notificaciones` existe desde la Fase A, pero no se usa. Corresponde a la Fase 4 del plan actual.
+- Correos (Fase 4a): todavía no hay pantalla "Notificaciones", reintento de fallidos, reenvío de credenciales ni lista de correos en el detalle del agente (Fase 4b). El recordatorio de mantenimiento no tiene disparador porque el módulo de mantenimientos no existe.
+- El envío ocurre dentro de la petición, después del COMMIT: con SMTP lento, el registro de una solicitud o la aprobación pueden tardar hasta el tiempo máximo (15 s) antes de responder.
+- `detalle_error` también guarda el detalle "Modo simulado…" de los correos simulados, que no son errores. La tabla no tiene una columna de detalle aparte.
 - Las tablas `firmas_cotizacion`, `ordenes_instalacion`, `checklist_evidencias` y `mantenimientos_programados` existen desde la Fase A, pero ninguna ruta las usa todavía.
 - En "Editar tarifa", lo escrito en "Desde un recibo" sin pulsar "Aplicar" no cuenta como cambio sin guardar.
 - `README.md` no se ha actualizado desde el commit inicial: no describe las integraciones 2 y 6 ni las fases recientes.
 - `server/index.js` solo importa `api.js` y conserva código antiguo comentado.
-- Al instalar dependencias en el commit `563a9d7`, `npm audit` reportó 14 vulnerabilidades, todas en herramientas de desarrollo que ya estaban (Vite, Tailwind, PostCSS, Babel); ninguna en las librerías de Excel. No se ha vuelto a revisar.
+- `npm audit` reporta 14 vulnerabilidades (11 altas, 2 moderadas, 1 baja), todas en herramientas de desarrollo: Vite 8.0.x, Tailwind 3, PostCSS, Babel y sus dependencias. `npm audit --omit=dev` da 0. Revisado de nuevo el 2026-10-19 al instalar `nodemailer`. Se atenderán después de la Fase 4 con `npm audit fix` sin `--force`; `braces` (vía Tailwind 3) solo se corrige pasando a `tailwindcss@4`, que no se hará.
 
 Datos:
 
@@ -132,10 +144,10 @@ Respuestas comunes:
 | POST | /api/prospectos | Administrador, Agente | Registra prospecto (ruta antigua; ninguna pantalla la usa) |
 | PATCH | /api/prospectos/:id | Administrador, Agente | Actualiza prospecto (ruta antigua; ninguna pantalla la usa) |
 | PUT | /api/prospectos/:id/consumo | Administrador, Agente | Consumo para la calculadora (sin acceso desde los menús) |
-| POST | /api/solicitudes | Agente | Registra solicitud, dirección y cuenta del cliente; rechaza estados no reconocidos |
+| POST | /api/solicitudes | Agente | Registra solicitud, dirección y cuenta del cliente con contraseña temporal; rechaza estados no reconocidos. Después del COMMIT envía las credenciales y responde `correo` con su estado (nunca la contraseña) |
 | GET | /api/solicitudes/:id | Administrador, Agente (solo las suyas) | Detalle de solicitud |
 | GET | /api/agente/solicitudes/:id/estimacion | Agente responsable | Vista previa del ahorro con la tarifa elegida o la sugerida |
-| POST | /api/agente/solicitudes/:id/aprobar | Agente responsable | Emite la cotización y guarda la estimación de ahorro |
+| POST | /api/agente/solicitudes/:id/aprobar | Agente responsable | Emite la cotización y guarda la estimación de ahorro. Después del COMMIT avisa "cotización lista" y responde `correo` |
 | POST | /api/agente/solicitudes/:id/devolver | Agente responsable | Devuelve la revisión al técnico con motivo |
 | GET | /api/tecnico/solicitudes | Técnico | Solicitudes de su estado de trabajo |
 | GET | /api/tecnico/solicitudes/:id | Técnico | Detalle con la misma restricción por estado |
@@ -162,6 +174,7 @@ Columnas agregadas sin cambiar `user_version` (idempotentes, en cada arranque):
 - Integración 6 (`6e5e658`): `cotizaciones_versiones.supuestos_ahorro` (JSON).
 - Fase 2 del plan actual (`4ad4702`): `tarifas_bloques.origen_precio`, `tarifas_cfe.origen_cargo_fijo`.
 - Fase 3 del plan actual (`861e96c`): `cuentas_cliente.debe_cambiar_password`, `password_actualizada_at`.
+- Fase 4a (sin commit): `registro_notificaciones.solicitud_id`, `intentos`, `ultimo_intento_at`, `archivo` e índice `notificaciones_solicitud_idx`.
 - Corrección de estados (`2dd526a`): no agrega columnas; en cada arranque completa `direcciones_cliente.estado_codigo` cuando el texto se reconoce y reporta las que no.
 
 Tablas y en qué commit aparecieron:
@@ -187,7 +200,7 @@ Tablas y en qué commit aparecieron:
 | ordenes_instalacion | 28fa1da | Sin uso todavía |
 | checklist_evidencias | 28fa1da | Sin uso todavía |
 | mantenimientos_programados | 28fa1da | Sin uso todavía |
-| registro_notificaciones | 28fa1da | Sin uso todavía (Fase 4) |
+| registro_notificaciones | 28fa1da | Correos de credenciales y de cotización lista, con su estado de envío (Fase 4a) |
 | tarifas_cfe | 6e5e658 | Tarifas de CFE |
 | tarifas_bloques | 6e5e658 | Bloques por temporada |
 | tarifas_estados | 6e5e658 | Tarifa sugerida por estado |
@@ -197,9 +210,55 @@ Tablas y en qué commit aparecieron:
 
 ## Historial
 
+### Fase 4a: notificaciones por correo (plantillas y modo simulado)
+
+- Estado: **implementado. Sin commit.** Primera parte de la Fase 4. Quedan para la Fase 4b: reenviar credenciales, pantalla "Notificaciones" del administrador con reintento y correos en el detalle del agente.
+- Por qué: diseño de la sección 3.2.3 del documento y tabla `registro_notificaciones`. Hasta ahora las cuentas de cliente nuevas se creaban con la contraseña `123` y no se enviaba ningún correo.
+- Dependencia nueva: `nodemailer@10.0.14`, versión exacta (sin `^` ni `~`), aprobada.
+  - Revisión antes de instalar (2026-10-19): publicada el 2026-10-03 (16.5 días), sin dependencias propias, `npm audit` sin vulnerabilidades al auditarla sola y sin hallazgos nuevos al agregarla al proyecto.
+  - Las 14 vulnerabilidades que ya tenía el proyecto en herramientas de desarrollo siguen igual. Se atenderán aparte, después de la Fase 4, con `npm audit fix` sin `--force` y sin pasar a `tailwindcss@4`.
+- Configuración:
+  - `server/entorno.js` carga `.env` con `process.loadEnvFile` de Node, sin dependencia. Se importa antes que cualquier otro módulo; las variables ya definidas en el entorno tienen prioridad. No imprime ni registra el contenido.
+  - Variables: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `CORREO_REMITENTE`, `APP_URL` y, opcional, `CORREO_TIEMPO_MAX_MS`. Documentadas en `.env.example`, sin valores reales.
+  - `.gitignore` agrega `.env` y `data/correos/`.
+  - Al arrancar, el servidor solo dice "Correo en modo simulado…" o "Correo: SMTP configurado". No muestra host, usuario ni contraseña.
+- Estados de envío:
+  - **sin `SMTP_HOST` (modo simulado):** cada correo se guarda como `.eml` en `data/correos/` y queda `pendiente` con el detalle "Modo simulado: no se envió. Archivo: …". Nunca se marca como aceptado ni entregado;
+  - **con SMTP:** `aceptado` (con `enviado_at`) cuando el servidor SMTP acepta el mensaje; `fallido` con `detalle_error` si falla, rechaza al destinatario o se agota el tiempo;
+  - `entregado` no se usa: requiere una confirmación del proveedor que no existe;
+  - el detalle de error oculta el usuario y la contraseña SMTP y se acota a 300 caracteres.
+- Tiempo máximo: 15 s por envío (`CORREO_TIEMPO_MAX_MS`). Si el servidor acepta el mensaje después del límite, el registro se corrige de `fallido` a `aceptado`.
+- Flujos:
+  - **Credenciales:** al registrar una solicitud, la cuenta del cliente se crea con una contraseña temporal aleatoria de 12 caracteres (sin caracteres ambiguos como 0/O o 1/l) y con "debe cambiar contraseña" activo. El correo con el acceso, la contraseña temporal y la URL se envía **después** del COMMIT.
+  - **Cotización lista:** al aprobar, el cliente recibe un aviso con la URL del portal, sin precios ni costos. También se envía después del COMMIT.
+  - **Recordatorio:** solo la plantilla (`plantillaRecordatorio`) y la función `enviarRecordatorio` en `server/correo.js`. No tiene disparador: depende del módulo de mantenimientos, que aún no existe.
+  - Si el envío falla, la solicitud o la aprobación quedan guardadas igual; el fallo queda en `registro_notificaciones` y la respuesta lo informa.
+  - La contraseña temporal no se guarda en la base, no se devuelve en la respuesta, no se imprime en la consola y no aparece en pantalla. Solo viaja en el correo (y, en modo simulado, dentro del `.eml`).
+  - El personal de demostración y las cuentas de cliente ya creadas siguen con `123` sin cambio obligatorio.
+- Interfaz:
+  - el modal "Solicitud registrada" ya no muestra "123". Indica que la contraseña es temporal y fue enviada por correo. En modo simulado muestra la ruta del archivo (`data/correos/<archivo>.eml`); si el envío falla, muestra un aviso ámbar con el detalle;
+  - al aprobar, el detalle de la solicitud muestra el mismo tipo de aviso para "cotización lista";
+  - `src/AvisoCorreo.jsx` (nuevo) muestra esos avisos. En `src/App.jsx` solo cambiaron el modal "Solicitud registrada" y el aviso tras aprobar.
+- Archivos: `server/entorno.js`, `server/correo.js`, `server/correoUtil.js`, `server/plantillasCorreo.js`, `src/AvisoCorreo.jsx`, `.env.example` (nuevos); `server/api.js`, `server/database.js`, `server/schema.sql`, `src/App.jsx`, `.gitignore`, `package.json`, `package-lock.json`.
+- Base de datos: columnas nuevas en `registro_notificaciones`: `solicitud_id` (con llave foránea a la solicitud), `intentos`, `ultimo_intento_at` y `archivo` (nombre del `.eml` simulado), más el índice `notificaciones_solicitud_idx`. Se agregan en el arranque con el patrón idempotente de `ALTER TABLE`; `user_version` sigue en 3. Probado sobre la copia de una base anterior: las columnas se agregan y no hay errores de llaves foráneas.
+- Rutas:
+  - `POST /api/solicitudes` responde además `correo: { id, estado, simulado, archivo?, detalle? }`;
+  - `POST /api/agente/solicitudes/:id/aprobar` responde además `correo` (o `null` si el cliente no tiene correo).
+- Pruebas:
+  - `server/plantillasCorreo.test.js` (7): plantillas en texto y HTML, cotización sin precios ni contraseñas, escape de HTML, configuración, contraseña temporal y limpieza del detalle de error;
+  - `server/correo.test.js` (9): modo simulado (archivo y registro pendiente), contraseña ausente de la respuesta, la base y la consola, cambio obligatorio con la temporal, personal con `123`, "cotización lista" al aprobar, SMTP falso que acepta, SMTP inalcanzable que no bloquea el registro, destinatario rechazado y servidor que no responde (se corta en el tiempo máximo);
+  - el ayudante de pruebas ignora el `.env` real (`ATLAS_ENV_ARCHIVO` apunta a un archivo inexistente), quita las variables SMTP heredadas y guarda los correos en la carpeta temporal (`ATLAS_CORREOS_DIR`). Nunca toca `data/atlas.sqlite` ni `data/correos/`;
+  - `registrarSolicitudPrueba` deja por defecto la cuenta como las creadas antes de la Fase 4 (`123`, sin cambio obligatorio), para las pruebas de contraseñas y sesiones; con `{ contrasena: null }` conserva la temporal.
+- Cómo probar en la interfaz (sin `.env`, es decir, en modo simulado):
+  1. Como `ventas@atlas.com`, registra una solicitud con un correo de ejemplo. El modal "Solicitud registrada" muestra `data/correos/<fecha>-credenciales-<n>.eml`.
+  2. Abre ese archivo con un cliente de correo o un editor de texto y copia la contraseña temporal.
+  3. Inicia sesión con ese correo: `123` es rechazada; con la temporal aparece "Crea tu nueva contraseña" y, al cambiarla, el portal.
+  4. Completa la revisión técnica y aprueba la cotización: el detalle muestra el aviso de "cotización lista" con su `.eml`. El correo no incluye precios.
+  5. Para ver el aviso de falla sin un SMTP real: en `.env` pon `SMTP_HOST=127.0.0.1` y `SMTP_PORT=9`, reinicia el backend y registra otra solicitud. El modal muestra "No se pudo enviar…" y la solicitud queda registrada. Quita esas dos líneas al terminar.
+
 ### Confirmación al cerrar con cambios sin guardar en inventario, proveedores, importación y parámetros
 
-- Estado: **implementado. Sin commit.**
+- Estado: **implementado.** Commit `7e90240`.
 - Por qué: varios modales de captura se cerraban con Escape, clic fuera, ✕ o "Cancelar" y perdían lo escrito sin avisar. Se aplican las mismas reglas que en "Editar tarifa".
 - Regla común: el modal guarda una copia de los valores con que se abrió. Si alguno difiere, cualquier forma de cerrar (Escape, clic fuera, ✕ y el botón "Cancelar" o "Cerrar") pide "¿Descartar los cambios?" con "Seguir editando" o "Descartar y cerrar". Volver a escribir el valor original ya no cuenta como cambio. Guardar con éxito cierra sin preguntar.
 - Modales protegidos:
@@ -222,7 +281,7 @@ Tablas y en qué commit aparecieron:
 
 ### A, B y C: manejo global de 401, límite de intentos del login y protección de rutas antiguas
 
-- Estado: **implementado. Sin commit.**
+- Estado: **implementado.** Commit `d360ef6`.
 - Por qué:
   - tras cambiar la contraseña en otra ventana, la ventana vieja recibía 401 y lo mostraba dentro del formulario en lugar de volver al login;
   - `/api/login` no limitaba intentos;

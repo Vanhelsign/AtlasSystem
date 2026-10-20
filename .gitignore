@@ -15,6 +15,10 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 data/backups/
+data/correos/
+
+# Configuración local con secretos (SMTP). .env.example sí se versiona.
+.env
 
 # Editor directories and files
 .vscode/*

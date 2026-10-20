@@ -115,6 +115,13 @@ for (const [tabla, columnas] of [
     ['debe_cambiar_password', 'INTEGER NOT NULL DEFAULT 0 CHECK (debe_cambiar_password IN (0, 1))'],
     ['password_actualizada_at', 'TEXT'],
   ]],
+  // Fase 4: notificaciones por correo. Los registros existentes quedan con 0 intentos y sin solicitud.
+  ['registro_notificaciones', [
+    ['solicitud_id', 'INTEGER REFERENCES solicitudes_cotizacion(id) ON DELETE SET NULL'],
+    ['intentos', 'INTEGER NOT NULL DEFAULT 0 CHECK (intentos >= 0)'],
+    ['ultimo_intento_at', 'TEXT'],
+    ['archivo', 'TEXT'],
+  ]],
 ]) {
   const existentes = db.prepare(`PRAGMA table_info(${tabla})`).all()
   for (const [nombre, tipo] of columnas) {
@@ -123,6 +130,8 @@ for (const [tabla, columnas] of [
     }
   }
 }
+// Va después de las columnas: en una base anterior a la Fase 4, solicitud_id no existe hasta el ALTER.
+db.exec('CREATE INDEX IF NOT EXISTS notificaciones_solicitud_idx ON registro_notificaciones(solicitud_id, created_at);')
 
 function respaldarBase(etiqueta) {
   const directorio = join(dirname(databasePath), 'backups')

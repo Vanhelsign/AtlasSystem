@@ -298,6 +298,11 @@ CREATE TABLE IF NOT EXISTS registro_notificaciones (
   detalle_error TEXT,
   enviado_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- Fase 4: solicitud relacionada, intentos de envío y nombre del .eml en modo simulado. Nunca guarda contraseñas.
+  solicitud_id INTEGER REFERENCES solicitudes_cotizacion(id) ON DELETE SET NULL,
+  intentos INTEGER NOT NULL DEFAULT 0 CHECK (intentos >= 0),
+  ultimo_intento_at TEXT,
+  archivo TEXT,
   FOREIGN KEY (prospecto_id) REFERENCES prospectos(id) ON DELETE SET NULL
 );
 

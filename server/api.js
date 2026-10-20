@@ -1,3 +1,5 @@
+// Primero: carga .env antes de que otros módulos lean process.env.
+import './entorno.js'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import process from 'node:process'
@@ -6,6 +8,7 @@ import { db, getProspecto, prospectSelect } from './database.js'
 import { ESTADOS_MEXICO, nombreEstadoMexico, normalizarEstadoMexico } from '../shared/estadosMexico.js'
 import { estimarAhorro, faltantesDeTarifa, kwpDePaneles, PARAMETROS_POR_DEFECTO, validarBloques } from '../shared/ahorroSolar.js'
 import { horasSolaresPico } from '../shared/irradiacion.js'
+import { describirModoCorreo, enviarCotizacionLista, enviarCredenciales, generarContrasenaTemporal } from './correo.js'
 
 const app = express()
 // Solo se confía en X-Forwarded-For cuando la petición llega desde un proxy local (el de Vite en desarrollo).
@@ -1642,7 +1645,7 @@ app.get('/api/solicitudes/:id', autenticar, permitirRoles('Administrador', 'Agen
   response.json(solicitud)
 })
 
-app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agente'), (request, response) => {
+app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agente'), async (request, response) => {
   const id = idValido(request.params.id)
   if (!id) return response.status(400).json({ error: 'Identificador inválido' })
   const precioVenta = Number(request.body.precio_venta)
@@ -1650,6 +1653,7 @@ app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agent
   const tarifaId = request.body.tarifa_id === undefined || request.body.tarifa_id === null || request.body.tarifa_id === '' ? null : idValido(request.body.tarifa_id)
   if (request.body.tarifa_id && !tarifaId) return response.status(400).json({ error: 'Tarifa no válida' })
 
+  let prospectoId
   try {
     db.exec('BEGIN IMMEDIATE')
     try {
@@ -1698,14 +1702,25 @@ app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agent
       `).run(id)
       if (actualizado.changes !== 1) throw Object.assign(new Error('La solicitud cambió de estado'), { status: 409 })
       db.exec('COMMIT')
-      response.json({ solicitud: getSolicitud(id), registro: getProspecto(solicitud.prospecto_id) })
+      prospectoId = solicitud.prospecto_id
     } catch (error) {
       db.exec('ROLLBACK')
       throw error
     }
   } catch (error) {
-    response.status(error.status || 400).json({ error: error.message })
+    return response.status(error.status || 400).json({ error: error.message })
   }
+
+  // El aviso se envía después del COMMIT: si falla, la aprobación ya quedó guardada y el fallo queda registrado.
+  const destino = db.prepare(`
+    SELECT p.nombre, COALESCE(c.email, p.email) AS email
+    FROM prospectos p LEFT JOIN cuentas_cliente c ON c.prospecto_id = p.id
+    WHERE p.id = ?
+  `).get(prospectoId)
+  const correo = destino?.email
+    ? await enviarCotizacionLista({ destinatario: destino.email, nombre: destino.nombre, prospectoId, solicitudId: id })
+    : null
+  response.json({ solicitud: getSolicitud(id), registro: getProspecto(prospectoId), correo })
 })
 
 app.post('/api/agente/solicitudes/:id/devolver', autenticar, permitirRoles('Agente'), (request, response) => {
@@ -1761,12 +1776,13 @@ app.post('/api/agente/solicitudes/:id/devolver', autenticar, permitirRoles('Agen
   }
 })
 
-app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), (request, response) => {
+app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), async (request, response) => {
+  let nombre, email, prospectoId, solicitudId, contrasenaTemporal
   try {
     const cliente = request.body.cliente ?? {}
-    const nombre = textoRequerido(cliente.nombre, 'nombre')
+    nombre = textoRequerido(cliente.nombre, 'nombre')
     const telefono = textoOpcional(cliente.telefono, 'teléfono')
-    const email = normalizarEmail(cliente.email)
+    email = normalizarEmail(cliente.email)
     const direccion = validarDireccion(request.body.direccion)
     const modalidad = request.body.modalidad
     if (!['historial_cfe', 'electrodomesticos'].includes(modalidad)) throw new Error('modalidad no válida')
@@ -1795,7 +1811,7 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), (request, resp
 
     db.exec('BEGIN')
     try {
-      const prospectoId = Number(db.prepare(`
+      prospectoId = Number(db.prepare(`
         INSERT INTO prospectos (nombre, telefono, email, estado)
         VALUES (?, ?, ?, 'Nuevo')
       `).run(nombre, telefono, email).lastInsertRowid)
@@ -1817,13 +1833,15 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), (request, resp
         direccion.numeroInterior,
       )
 
-      const credencial = hashPassword('123')
+      // Contraseña temporal aleatoria: solo viaja en el correo de credenciales; nunca se registra ni se devuelve.
+      contrasenaTemporal = generarContrasenaTemporal()
+      const credencial = hashPassword(contrasenaTemporal)
       db.prepare(`
-        INSERT INTO cuentas_cliente (prospecto_id, email, password_hash, password_salt, rol)
-        VALUES (?, ?, ?, ?, 'Cliente')
+        INSERT INTO cuentas_cliente (prospecto_id, email, password_hash, password_salt, rol, debe_cambiar_password)
+        VALUES (?, ?, ?, ?, 'Cliente', 1)
       `).run(prospectoId, email, credencial.hash, credencial.salt)
 
-      const solicitudId = Number(db.prepare(`
+      solicitudId = Number(db.prepare(`
         INSERT INTO solicitudes_cotizacion (
           prospecto_id, modalidad, consumo_diario_kwh, consumo_mensual_kwh,
           consumo_introducido_kwh, margen_crecimiento_pct, consumo_objetivo_kwh,
@@ -1884,15 +1902,19 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), (request, resp
       `).run(prospectoId, consumoObjetivo, configuracion.ciudad, configuracion.eficiencia)
 
       db.exec('COMMIT')
-      response.status(201).json({ registro: getProspecto(prospectoId), solicitud: getSolicitud(solicitudId) })
     } catch (error) {
       db.exec('ROLLBACK')
       throw error
     }
   } catch (error) {
     const duplicado = String(error.message).includes('UNIQUE constraint failed')
-    response.status(duplicado ? 409 : 400).json({ error: duplicado ? 'El correo electrónico ya está registrado' : error.message })
+    return response.status(duplicado ? 409 : 400).json({ error: duplicado ? 'El correo electrónico ya está registrado' : error.message })
   }
+
+  // El correo se envía después del COMMIT: si falla, la solicitud ya quedó registrada y el fallo queda en
+  // registro_notificaciones. La respuesta lleva el estado del correo, nunca la contraseña.
+  const correo = await enviarCredenciales({ destinatario: email, nombre, contrasenaTemporal, prospectoId, solicitudId })
+  response.status(201).json({ registro: getProspecto(prospectoId), solicitud: getSolicitud(solicitudId), correo })
 })
 
 // Rutas antiguas de prospectos: desde la corrección de seguridad exigen sesión de Administrador o Agente.
@@ -1964,4 +1986,7 @@ app.use((error, _request, response, next) => {
   response.status(500).json({ error: 'Error interno del servidor' })
 })
 
-app.listen(port, () => console.log(`API de ATLAS disponible en http://localhost:${port}`))
+app.listen(port, () => {
+  console.log(`API de ATLAS disponible en http://localhost:${port}`)
+  console.log(describirModoCorreo())
+})

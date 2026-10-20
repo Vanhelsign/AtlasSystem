@@ -12,6 +12,7 @@ import TarifasCfe from "./TarifasCfe.jsx";
 import AhorroInversion from "./AhorroInversion.jsx";
 import EmisionAhorro, { ModalEmitirCotizacion } from "./EmisionAhorro.jsx";
 import Modal from "./Modal.jsx";
+import AvisoCorreo from "./AvisoCorreo.jsx";
 import FormularioCambioContrasena, { PantallaCambioObligatorio } from "./CambiarContrasena.jsx";
 import { ESTADOS_MEXICO, nombreEstadoMexico } from "../shared/estadosMexico.js";
 
@@ -277,6 +278,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
   const [solicitudDetalle, setSolicitudDetalle] = useState(null);
   const [errorDetalle, setErrorDetalle] = useState("");
   const [mensajeDetalle, setMensajeDetalle] = useState("");
+  const [correoAprobacion, setCorreoAprobacion] = useState(null);
   const [margenComercial, setMargenComercial] = useState(25);
   const [precioVenta, setPrecioVenta] = useState("");
   const [motivoDevolucion, setMotivoDevolucion] = useState("");
@@ -311,6 +313,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
     setSolicitudDetalle(null);
     setErrorDetalle("");
     setMensajeDetalle("");
+    setCorreoAprobacion(null);
     setMotivoDevolucion("");
     setTarifaEmision("");
     setEstimacionEmision(null);
@@ -350,7 +353,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
   };
 
   const ejecutarRevision = async (accion, body) => {
-    setProcesandoRevision(true); setErrorDetalle(""); setMensajeDetalle("");
+    setProcesandoRevision(true); setErrorDetalle(""); setMensajeDetalle(""); setCorreoAprobacion(null);
     try {
       const response = await fetch(`/api/agente/solicitudes/${registroDetalle.solicitud_id}/${accion}`, {
         method: "POST",
@@ -363,6 +366,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
       setRegistroDetalle(data.registro);
       onActualizarRegistro(data.registro);
       setMensajeDetalle(accion === "aprobar" ? "Cotización enviada al prospecto." : "Revisión devuelta al técnico responsable.");
+      if (accion === "aprobar") setCorreoAprobacion(data.correo ?? null);
       setMotivoDevolucion("");
       return null;
     } catch (error) {
@@ -438,6 +442,7 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
         acciones={({ cerrar }) => <button type="button" onClick={cerrar} disabled={procesandoRevision} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cerrar</button>}
       >
           {mensajeDetalle && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{mensajeDetalle}</p>}
+          <AvisoCorreo correo={correoAprobacion} tipo="cotizacion_lista" />
           <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
             <div><dt className="text-slate-500">Prospecto</dt><dd className="font-semibold">{registroDetalle.nombre}</dd></div>
             <div><dt className="text-slate-500">Estatus</dt><dd className="font-semibold">{ESTADOS_SOLICITUD[estadoDe(registroDetalle)]}</dd></div>
@@ -827,7 +832,7 @@ export default function App() {
 
     setLeads((actuales) => [data.registro, ...actuales]);
     setErrorApi("");
-    setRegistroExitoso({ email: data.registro.email });
+    setRegistroExitoso({ email: data.registro.email, correo: data.correo });
     return data;
   };
 
@@ -998,8 +1003,9 @@ export default function App() {
         >
           <dl className="grid gap-3 text-sm sm:grid-cols-2">
             <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Cuenta del cliente</dt><dd className="break-all font-semibold">{registroExitoso.email}</dd></div>
-            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Contraseña temporal</dt><dd className="font-semibold">123</dd></div>
+            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Contraseña</dt><dd className="font-semibold">Temporal, enviada por correo. El cliente debe cambiarla al entrar.</dd></div>
           </dl>
+          <AvisoCorreo correo={registroExitoso.correo} tipo="credenciales" destinatario={registroExitoso.email} />
         </Modal>}
 
         {pagina === "leads" && <Cotizacion
