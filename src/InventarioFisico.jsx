@@ -572,6 +572,9 @@ function ModalProducto({ producto, proveedores, onCerrar, onGuardar }) {
     potencia_kw: texto(producto?.potencia_kw),
     capacidad_kwh: texto(producto?.capacidad_kwh),
   }));
+  // Valores con los que se abrió el modal; si difieren, cerrar pide confirmación.
+  const [valoresIniciales] = useState(() => JSON.stringify(form));
+  const hayCambios = JSON.stringify(form) !== valoresIniciales;
   const [error, setError] = useState("");
   const [ocupado, setOcupado] = useState(false);
   const clasificacion = editando ? producto.clasificacion : form.tipo === "Mano de obra" ? "servicio" : "material";
@@ -606,8 +609,10 @@ function ModalProducto({ producto, proveedores, onCerrar, onGuardar }) {
       ocupado={ocupado}
       onCerrar={onCerrar}
       onEnviar={guardar}
-      acciones={<>
-        <button type="button" onClick={onCerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
+      confirmarCierre={hayCambios}
+      mensajeCambios={editando ? "Cambiaste datos de este producto y no los has guardado. Si cierras, se perderán." : "Capturaste datos del producto nuevo y no lo has agregado. Si cierras, se perderán."}
+      acciones={({ cerrar }) => <>
+        <button type="button" onClick={cerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
         <button type="submit" disabled={ocupado} className={BOTON_PRIMARIO}>{ocupado ? "Guardando…" : editando ? "Guardar cambios" : "Agregar producto"}</button>
       </>}
     >
@@ -640,6 +645,9 @@ function ModalProducto({ producto, proveedores, onCerrar, onGuardar }) {
 function ModalFilaImportacion({ original, actual, revisionFila, onCerrar, onGuardar }) {
   const aTexto = (fila) => Object.fromEntries(COLUMNAS_FILA.map(([campo]) => [campo, fila[campo] ?? ""]));
   const [form, setForm] = useState(() => aTexto(actual));
+  // Valores de la fila al abrir el modal (con correcciones previas, si las hay); si difieren, cerrar pide confirmación.
+  const [valoresIniciales] = useState(() => JSON.stringify(form));
+  const hayCambios = JSON.stringify(form) !== valoresIniciales;
   const [error, setError] = useState("");
   const [ocupado, setOcupado] = useState(false);
   const cambiar = (campo) => (event) => setForm({ ...form, [campo]: event.target.value });
@@ -682,9 +690,11 @@ function ModalFilaImportacion({ original, actual, revisionFila, onCerrar, onGuar
       onCerrar={onCerrar}
       onEnviar={guardar}
       ancho="max-w-2xl"
-      acciones={<>
+      confirmarCierre={hayCambios}
+      mensajeCambios="Cambiaste valores de esta fila y no los has guardado en la revisión. Si cierras, se perderán."
+      acciones={({ cerrar }) => <>
         <button type="button" onClick={() => setForm(aTexto(original))} disabled={ocupado} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100 sm:mr-auto">Restaurar valores del archivo</button>
-        <button type="button" onClick={onCerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
+        <button type="button" onClick={cerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
         <button type="submit" disabled={ocupado} className={BOTON_PRIMARIO}>{ocupado ? "Revisando…" : "Guardar y revisar"}</button>
       </>}
     >
@@ -783,8 +793,10 @@ function ModalBaja({ producto, onCerrar, onConfirmar }) {
       ocupado={ocupado}
       onCerrar={onCerrar}
       onEnviar={confirmar}
-      acciones={<>
-        <button type="button" onClick={onCerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
+      confirmarCierre={motivo.trim() !== ""}
+      mensajeCambios="Escribiste un motivo de baja y no la has confirmado. Si cierras, el motivo se perderá y el producto seguirá activo."
+      acciones={({ cerrar }) => <>
+        <button type="button" onClick={cerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
         <button type="submit" disabled={ocupado} className={BOTON_PELIGRO}>{ocupado ? "Guardando…" : "Dar de baja"}</button>
       </>}
     >
@@ -842,6 +854,10 @@ function ModalProveedores({ proveedores, setProveedores, solicitarApi, onElimina
     guardarPreferencia("atlas.proveedores.orden", valor);
   };
 
+  // Solo cuenta como cambio un nombre nuevo escrito o un renombre distinto del nombre actual; búsqueda y orden no.
+  const nombreEnEdicion = edicion && proveedores.find((proveedor) => proveedor.id === edicion.id)?.nombre;
+  const hayCambios = nuevoNombre.trim() !== "" || Boolean(edicion && edicion.nombre.trim() !== nombreEnEdicion);
+
   const visibles = proveedores
     .filter((proveedor) => claveBusqueda(proveedor.nombre).includes(claveBusqueda(busqueda)))
     .sort((a, b) => orden === "fecha"
@@ -894,7 +910,9 @@ function ModalProveedores({ proveedores, setProveedores, solicitarApi, onElimina
 
   return (
     <Modal titulo="Proveedores" descripcion="Directorio de proveedores del catálogo." error={error} onCerrar={onCerrar} ancho="max-w-2xl"
-      acciones={<button type="button" onClick={onCerrar} className={BOTON_SECUNDARIO}>Cerrar</button>}>
+      confirmarCierre={hayCambios}
+      mensajeCambios="Escribiste el nombre de un proveedor nuevo o un renombre y no lo has guardado. Si cierras, se perderá."
+      acciones={({ cerrar }) => <button type="button" onClick={cerrar} className={BOTON_SECUNDARIO}>Cerrar</button>}>
       {mensaje && <p role="status" className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{mensaje}</p>}
       <form onSubmit={agregar} className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <label className={`${ETIQUETA} flex-1`}>Nuevo proveedor<input value={nuevoNombre} onChange={(event) => setNuevoNombre(event.target.value)} placeholder="Nombre comercial" className={CAMPO} /></label>

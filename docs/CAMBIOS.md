@@ -197,6 +197,29 @@ Tablas y en qué commit aparecieron:
 
 ## Historial
 
+### Confirmación al cerrar con cambios sin guardar en inventario, proveedores, importación y parámetros
+
+- Estado: **implementado. Sin commit.**
+- Por qué: varios modales de captura se cerraban con Escape, clic fuera, ✕ o "Cancelar" y perdían lo escrito sin avisar. Se aplican las mismas reglas que en "Editar tarifa".
+- Regla común: el modal guarda una copia de los valores con que se abrió. Si alguno difiere, cualquier forma de cerrar (Escape, clic fuera, ✕ y el botón "Cancelar" o "Cerrar") pide "¿Descartar los cambios?" con "Seguir editando" o "Descartar y cerrar". Volver a escribir el valor original ya no cuenta como cambio. Guardar con éxito cierra sin preguntar.
+- Modales protegidos:
+  - **Nuevo producto y Editar producto:** cualquier campo distinto del inicial;
+  - **Editar fila (vista previa de la importación):** cualquier campo distinto de como estaba la fila al abrir (con sus correcciones previas, si las tenía). "Restaurar valores del archivo" cuenta como cambio solo si deja la fila distinta de como se abrió;
+  - **Parámetros de la estimación:** cualquier valor distinto del inicial;
+  - **Dar de baja:** solo si ya hay un motivo escrito (los espacios no cuentan);
+  - **Proveedores:** solo si hay un nombre escrito en "Nuevo proveedor" o un renombre abierto con un nombre distinto del actual. La búsqueda, el orden y abrir "Renombrar" sin cambiar el nombre no cuentan.
+- Sin protección, a propósito: Exportar, Reactivar, Eliminar (tarifa o proveedor), Confirmar importación, emitir cotización y tickets.
+- Archivos: `src/InventarioFisico.jsx` (`ModalProducto`, `ModalFilaImportacion`, `ModalBaja`, `ModalProveedores`) y `src/TarifasCfe.jsx` (`ModalParametros`). `Modal.jsx` no cambió.
+- Base de datos y rutas de la API: sin cambios.
+- Cómo probar:
+  - en Inventario Físico, abrir "Nuevo producto", escribir un modelo y pulsar Escape: aparece la confirmación. "Seguir editando" conserva lo escrito; "Descartar y cerrar" cierra ambos;
+  - abrir "Editar" de un producto y cerrar sin cambiar nada: cierra directo;
+  - "Dar de baja" con el motivo vacío cierra directo; con motivo pide confirmar y el producto sigue activo;
+  - en "Proveedores", buscar u ordenar y cerrar: directo. Escribir un nombre nuevo, o cambiar un nombre en "Renombrar" sin guardar, y cerrar: pide confirmar;
+  - importar `docs/ejemplos/inventario_ejemplo.xlsx`, revisar, editar la fila 7, cambiar el modelo y pulsar Cancelar: pide confirmar;
+  - en Tarifas y ahorro, "Editar" parámetros, cambiar un valor y pulsar Escape: pide confirmar;
+  - Exportar y Reactivar cierran sin preguntar.
+
 ### A, B y C: manejo global de 401, límite de intentos del login y protección de rutas antiguas
 
 - Estado: **implementado. Sin commit.**

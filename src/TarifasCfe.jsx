@@ -283,6 +283,9 @@ function ModalEliminarTarifa({ tarifa, onCerrar, onConfirmar }) {
 
 function ModalParametros({ parametros, onCerrar, onGuardar }) {
   const [form, setForm] = useState(() => Object.fromEntries(PARAMETROS.map(([clave, , , factor]) => [clave, String(Math.round(parametros[clave] * factor * 1000) / 1000)])));
+  // Valores con los que se abrió el modal; si difieren, cerrar pide confirmación.
+  const [valoresIniciales] = useState(() => JSON.stringify(form));
+  const hayCambios = JSON.stringify(form) !== valoresIniciales;
   const [error, setError] = useState("");
   const [ocupado, setOcupado] = useState(false);
 
@@ -306,8 +309,10 @@ function ModalParametros({ parametros, onCerrar, onGuardar }) {
       ocupado={ocupado}
       onCerrar={onCerrar}
       onEnviar={guardar}
-      acciones={<>
-        <button type="button" onClick={onCerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
+      confirmarCierre={hayCambios}
+      mensajeCambios="Cambiaste parámetros de la estimación y no los has guardado. Si cierras, se perderán."
+      acciones={({ cerrar }) => <>
+        <button type="button" onClick={cerrar} disabled={ocupado} className={BOTON_SECUNDARIO}>Cancelar</button>
         <button type="submit" disabled={ocupado} className={BOTON_PRIMARIO}>{ocupado ? "Guardando…" : "Guardar parámetros"}</button>
       </>}
     >
