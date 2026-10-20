@@ -303,6 +303,10 @@ CREATE TABLE IF NOT EXISTS registro_notificaciones (
   intentos INTEGER NOT NULL DEFAULT 0 CHECK (intentos >= 0),
   ultimo_intento_at TEXT,
   archivo TEXT,
+  -- Validez del enlace de un correo de credenciales (independiente de estado_envio, que es el resultado del envío):
+  -- 'reemplazado' cuando se emite un enlace más reciente para la cuenta; 'usado' cuando se crea la contraseña con él.
+  desactivado_at TEXT,
+  desactivado_motivo TEXT CHECK (desactivado_motivo IS NULL OR desactivado_motivo IN ('reemplazado', 'usado')),
   FOREIGN KEY (prospecto_id) REFERENCES prospectos(id) ON DELETE SET NULL
 );
 

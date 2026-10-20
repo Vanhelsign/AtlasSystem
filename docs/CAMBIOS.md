@@ -95,6 +95,8 @@ Funcionalidad:
 - Tickets técnicos, reactivación comercial y evidencias fotográficas siguen en memoria del navegador (`useState`); la evidencia es simulada.
 - El recordatorio de mantenimiento no tiene disparador porque el módulo de mantenimientos no existe, y en la pantalla Notificaciones no se puede reintentar.
 - Reintentar reutiliza la misma fila de `registro_notificaciones` (sube `intentos`); no queda historial de cada intento por separado. Un reenvío desde el detalle sí crea una fila nueva.
+- Un correo de enlace sin marca "Desactivado" puede tener un enlace vencido: el vencimiento (48 horas) no se marca ni se muestra. El filtro "Vigente" significa "no reemplazado, no usado y con el cliente activo", no "dentro de las 48 horas".
+- Los correos de credenciales marcados antes de esta mejora solo tienen la marca calculada por la migración: no hay `'usado'` para contraseñas creadas antes.
 - La pantalla Notificaciones muestra hasta 50 por página, sin búsqueda por destinatario.
 - El envío ocurre dentro de la petición, después del COMMIT: con SMTP lento, el registro de una solicitud o la aprobación pueden tardar hasta el tiempo máximo (15 s) antes de responder.
 - `detalle_error` también guarda el detalle "Modo simulado…" de los correos simulados, que no son errores. La tabla no tiene una columna de detalle aparte.
@@ -144,7 +146,7 @@ Respuestas comunes:
 | GET | /api/solicitudes/:id/notificaciones | Agente responsable, Administrador | Correos de la solicitud y `acceso_pendiente`. 404 en papelera u otro agente |
 | GET | /api/notificaciones | Administrador | `?estado=&tipo=&pagina=`, 50 por página; clientes eliminados anonimizados |
 | POST | /api/notificaciones/:id/reintentar | Administrador | Solo fallidas de clientes activos; misma fila (`intentos` + 1); credenciales con token nuevo. 409 con el motivo; 429 `limite_reenvio` |
-| POST | /api/portal/cambiar-contrasena | Cliente | Cambia la contraseña; cierra las demás sesiones de la cuenta (su 401 dirá `contrasena_cambiada`); 429 tras 5 contraseñas actuales incorrectas en 10 minutos |
+| POST | /api/portal/cambiar-contrasena | Cliente | Cambia la contraseña (pantallas "Crea tu nueva contraseña" y "Cambiar contraseña"); vence los enlaces de acceso pendientes y marca "usado" su correo; cierra las demás sesiones de la cuenta (su 401 dirá `contrasena_cambiada`); 429 tras 5 contraseñas actuales incorrectas en 10 minutos |
 | GET | /api/portal/prospectos/:id | Cliente (solo el suyo) | Datos del portal, solicitud y cotización emitida con su estimación de ahorro guardada |
 | GET | /api/productos | Administrador, Agente, Técnico | Catálogo (el administrador ve también inactivos) |
 | POST | /api/productos | Administrador | Crea producto o servicio |
@@ -211,8 +213,9 @@ Columnas agregadas sin cambiar `user_version` (idempotentes, en cada arranque):
 - Fase 2 del plan actual (`4ad4702`): `tarifas_bloques.origen_precio`, `tarifas_cfe.origen_cargo_fijo`.
 - Fase 3 del plan actual (`861e96c`): `cuentas_cliente.debe_cambiar_password`, `password_actualizada_at`.
 - Fase 4a (`7c059c7`): `registro_notificaciones.solicitud_id`, `intentos`, `ultimo_intento_at`, `archivo` e índice `notificaciones_solicitud_idx`.
+- Mejora a la 4b (sin commit): `registro_notificaciones.desactivado_at` y `desactivado_motivo` (`'reemplazado'` o `'usado'`). Al crearlas en una base anterior, marca `'reemplazado'` los correos de credenciales que tienen uno más reciente de la misma cuenta, con la fecha del siguiente.
 - Cambio de la Fase 4a (`b09bf67`): tabla nueva `tokens_cuenta` (con `CREATE TABLE IF NOT EXISTS`, sin migración de columnas).
-- Papelera de clientes (`527894e`): `prospectos` y `solicitudes_cotizacion` reciben `eliminado_at`, `eliminado_por`, `motivo_eliminacion` y `eliminacion_lote` (NULL por defecto), con índices `prospectos_eliminado_idx` y `solicitudes_eliminado_idx`.
+- Papelera de clientes (`d7967bc`): `prospectos` y `solicitudes_cotizacion` reciben `eliminado_at`, `eliminado_por`, `motivo_eliminacion` y `eliminacion_lote` (NULL por defecto), con índices `prospectos_eliminado_idx` y `solicitudes_eliminado_idx`.
 - Corrección de estados (`2dd526a`): no agrega columnas; en cada arranque completa `direcciones_cliente.estado_codigo` cuando el texto se reconoce y reporta las que no.
 
 Tablas y en qué commit aparecieron:
@@ -249,9 +252,44 @@ Tablas y en qué commit aparecieron:
 
 ## Historial
 
-### Fase 4b: reenvío del enlace de acceso, pantalla "Notificaciones" y correos en el detalle
+### Ajuste: cambiar la contraseña invalida el enlace de acceso pendiente
+
+- Estado: **implementado. Sin commit.** Complementa la entrada siguiente (mejora a la 4b, también sin commit).
+- Por qué: si un cliente cambiaba su contraseña desde "Crea tu nueva contraseña" o "Cambiar contraseña" sin usar el enlace del correo, ese enlace seguía funcionando hasta vencer y con él se podía volver a fijar la contraseña.
+- Cambio: `POST /api/portal/cambiar-contrasena` (la usan las dos pantallas) guarda la contraseña, vence los tokens pendientes de la cuenta (`UPDATE tokens_cuenta SET expira_at = ahora`, sin borrar) y marca `'usado'` el correo de enlace vigente, todo en una transacción. Sigue cerrando las demás sesiones como antes.
+- Base de datos: sin cambios de esquema.
+- Archivos: `server/api.js`, `server/desactivacion.test.js`.
+- Prueba (en `server/desactivacion.test.js`): por las dos vías (con y sin cambio obligatorio), el enlace pendiente responde "enlace_invalido" al validarlo y al usarlo, la contraseña elegida sigue siendo la válida, el correo queda `'usado'` y el token queda vencido sin borrarse. Base temporal.
+- Cómo probar en la interfaz: registra una solicitud, haz que la cuenta tenga contraseña conocida (o usa una cuenta de la primera 4a), cambia la contraseña desde el portal y abre después el enlace del `.eml`: debe decir "El enlace no es válido o venció". En Notificaciones, ese correo aparece "Desactivado · Ya se usó para crear la contraseña".
+
+### Mejora a la 4b: correos de enlace de acceso desactivados
 
 - Estado: **implementado. Sin commit.**
+- Por qué: al emitir un enlace nuevo, el correo anterior seguía viéndose igual aunque su enlace ya no funcionaba. La validez del enlace es independiente del resultado del envío, así que `estado_envio` no cambia: se agrega una marca aparte.
+- Base de datos: `registro_notificaciones.desactivado_at` (NULL por defecto) y `desactivado_motivo` (`CHECK` en `'reemplazado'`, `'usado'`). En bases nuevas están en `schema.sql`; en bases anteriores se agregan con el patrón idempotente de `ALTER TABLE`. `user_version` sigue en 3.
+- Migración de datos (solo la vez que se crea la columna):
+  - cada correo de credenciales que tiene otro más reciente de la misma cuenta (mismo `prospecto_id`) se marca `'reemplazado'`, con `desactivado_at` = fecha de creación del correo **inmediato siguiente** de esa cuenta (el que lo reemplazó);
+  - no se marca `'usado'` retroactivamente: no consta qué enlace se usó para crear cada contraseña;
+  - las notificaciones anonimizadas (sin prospecto) no se pueden relacionar con una cuenta y quedan sin marca;
+  - no cambia ninguna otra columna ni borra filas; si la columna ya existe, no se recalcula.
+- Servidor:
+  - `emitirTokenCuenta` (registro de solicitud, reenvío y reintento de credenciales) marca `'reemplazado'` los correos de credenciales vigentes de la cuenta, en la misma transacción que borra los tokens anteriores. El reintento conserva su propia fila, que lleva el enlace nuevo;
+  - crear la contraseña con el enlace marca `'usado'` el correo vigente de la cuenta, en la misma transacción que consume el token;
+  - un correo desactivado nunca tiene `puede_reintentar`, aunque esté fallido; `POST /api/notificaciones/:id/reintentar` responde 409 con "El enlace de este correo ya no funciona: se reemplazó por uno más reciente…" o "…ya se usó para crear la contraseña…";
+  - `GET /api/notificaciones` y `GET /api/solicitudes/:id/notificaciones` devuelven `desactivado` (booleano) y `motivo_desactivacion`. No devuelven la fecha de desactivación, tokens, enlaces ni fechas de expiración;
+  - filtro nuevo `GET /api/notificaciones?enlace=vigente|desactivado`, que limita a correos de enlace de acceso. "Vigente" exige además un cliente activo (no en la papelera ni eliminado), porque en ese caso el enlace ya no sirve aunque no tenga marca;
+  - el filtro de papelera y los permisos no cambian.
+- Interfaz: en la pantalla Notificaciones y en "Correos al cliente", etiqueta gris "Desactivado" junto al estado de envío, con el motivo ("Reemplazado por un enlace más reciente" o "Ya se usó para crear la contraseña"); sin "Reintentar" en esas filas; filtro "Enlace: Todos / Vigente / Desactivado"; textos de ayuda que explican que "Desactivado" significa que ese enlace ya no funciona.
+- Archivos: `server/schema.sql`, `server/database.js`, `server/tokensCuenta.js` (`desactivarCorreosCredenciales`), `server/api.js`, `src/Notificaciones.jsx`, `src/CorreosSolicitud.jsx`, `src/correosComunes.js`; `server/desactivacion.test.js` (nuevo).
+- Pruebas (`server/desactivacion.test.js`, 7): reenvío que desactiva el anterior sin cambiar su estado de envío, reintento que reutiliza su fila y desactiva las demás, creación de contraseña que marca `'usado'`, 409 al reintentar un correo reemplazado o usado aunque esté fallido, filtro "Enlace" (incluido un cliente en la papelera que deja de ser vigente), migración sobre una copia de base anterior (columnas agregadas, fechas del correo siguiente, ningún `'usado'`, anonimizadas sin marca, resto de cada fila idéntico, sin recálculo en el segundo arranque) y ningún token, enlace ni expiración en respuestas, registros ni consola. Las 109 pruebas anteriores siguen pasando.
+- Cómo probar en la interfaz (modo simulado):
+  1. Como `ventas@atlas.com`, registra una solicitud, abre su detalle y pulsa "Reenviar enlace de acceso": el primer correo muestra "Pendiente" y la etiqueta gris "Desactivado", con "Reemplazado por un enlace más reciente".
+  2. Crea la contraseña con el enlace del último `.eml` y abre otra vez el detalle: ese correo muestra "Desactivado · Ya se usó para crear la contraseña", y el botón de reenvío ya no aparece.
+  3. Como `admin@atlas.com`, en Notificaciones usa el filtro "Enlace": "Desactivado" muestra solo enlaces reemplazados o usados, sin botón "Reintentar"; "Vigente" muestra solo los que siguen funcionando.
+
+### Fase 4b: reenvío del enlace de acceso, pantalla "Notificaciones" y correos en el detalle
+
+- Estado: **implementado.** Commit `a0e1a02`.
 - Por qué: cerrar la Fase 4. Sin reenvío, un enlace vencido o un correo fallido dejaba al cliente sin acceso, y el administrador no tenía dónde ver ni reintentar los correos.
 - Reenviar enlace de acceso:
   - botón "Reenviar enlace de acceso" en el bloque "Correos al cliente" del detalle de la solicitud (Cotizaciones Emitidas), visible para el agente responsable y el administrador, solo mientras el cliente no haya creado su contraseña (`debe_cambiar_password = 1`). Confirmación en `Modal`; el resultado se muestra con el aviso de correo existente (aceptado, modo simulado con su `.eml`, o ámbar si falla);
@@ -277,7 +315,7 @@ Tablas y en qué commit aparecieron:
 
 ### Clientes y papelera: borrado lógico, restauración y eliminación definitiva
 
-- Estado: **implementado.** Commit `527894e`.
+- Estado: **implementado.** Commit `d7967bc`.
 - Por qué: el administrador necesita gestionar clientes y estimaciones (por ejemplo, limpiar registros de prueba) sin perder información por error. Primero van a una papelera de la que se pueden restaurar; el borrado físico solo ocurre desde ahí y con confirmación explícita.
 - Pantalla "Clientes" (solo Administrador; menú con el ícono 🗂️, visible con el menú contraído):
   - tabla con nombre, correo, estado geográfico, número de solicitudes, estatus de la solicitud más reciente y fecha de alta (o de eliminación y motivo en "Eliminados"), buscador por nombre o correo y selector "Activos / Eliminados";

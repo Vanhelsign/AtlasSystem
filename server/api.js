@@ -14,7 +14,7 @@ import {
   detalleCliente, eliminarCliente, eliminarDefinitivamente, eliminarSolicitud, ErrorPapelera, listarClientes,
   restaurarCliente, restaurarSolicitud, validarMotivo,
 } from './papelera.js'
-import { buscarTokenVigente, consumirToken, emitirTokenCuenta, HORAS_VIGENCIA_ENLACE } from './tokensCuenta.js'
+import { buscarTokenVigente, consumirToken, desactivarCorreosCredenciales, emitirTokenCuenta, HORAS_VIGENCIA_ENLACE } from './tokensCuenta.js'
 
 const app = express()
 // Solo se confía en X-Forwarded-For cuando la petición llega desde un proxy local (el de Vite en desarrollo).
@@ -656,11 +656,25 @@ app.post('/api/portal/cambiar-contrasena', autenticar, permitirRoles('Cliente'),
   }
 
   const credencial = hashPassword(nueva)
-  db.prepare(`
-    UPDATE cuentas_cliente
-    SET password_hash = ?, password_salt = ?, debe_cambiar_password = 0, password_actualizada_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(credencial.hash, credencial.salt, cuentaId)
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.prepare(`
+      UPDATE cuentas_cliente
+      SET password_hash = ?, password_salt = ?, debe_cambiar_password = 0, password_actualizada_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(credencial.hash, credencial.salt, cuentaId)
+    // Con la contraseña ya elegida, un enlace "Crea tu contraseña" pendiente no debe seguir sirviendo para fijar
+    // otra: vence ya (UPDATE, sin borrar) y su correo vigente queda marcado como usado.
+    db.prepare(`
+      UPDATE tokens_cuenta SET expira_at = datetime('now')
+      WHERE cuenta_id = ? AND usado_at IS NULL AND expira_at > datetime('now')
+    `).run(cuentaId)
+    desactivarCorreosCredenciales(cuentaId, 'usado')
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
   limiteCambioContrasena.reiniciar(cuentaId)
 
   // Cierra las demás sesiones de la cuenta y conserva la actual. Quedan marcadas para que la otra ventana
@@ -723,6 +737,8 @@ app.post('/api/portal/crear-contrasena', (request, response) => {
       SET password_hash = ?, password_salt = ?, debe_cambiar_password = 0, password_actualizada_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(credencial.hash, credencial.salt, vigente.cuenta_id)
+    // El correo con el enlace vigente queda marcado como usado (su enlace ya no funciona).
+    desactivarCorreosCredenciales(vigente.cuenta_id, 'usado')
     db.exec('COMMIT')
   } catch (error) {
     db.exec('ROLLBACK')
@@ -2095,10 +2111,12 @@ const consumirCupoReenvio = (response, clave) => {
   return true
 }
 
-const emitirTokenEnTransaccion = (cuentaId) => {
+// Token nuevo y marca 'reemplazado' de los correos anteriores en una misma transacción. Al reintentar se conserva
+// la fila que se reintenta, porque llevará el enlace nuevo.
+const emitirTokenEnTransaccion = (cuentaId, conservarNotificacionId = null) => {
   db.exec('BEGIN IMMEDIATE')
   try {
-    const token = emitirTokenCuenta(cuentaId)
+    const token = emitirTokenCuenta(cuentaId, 'crear_contrasena', { conservarNotificacionId })
     db.exec('COMMIT')
     return token
   } catch (error) {
@@ -2147,16 +2165,17 @@ app.get('/api/solicitudes/:id/notificaciones', autenticar, permitirRoles('Admini
   const solicitud = solicitudConCuenta(request, id)
   if (!solicitud) return response.status(404).json({ error: 'Solicitud no encontrada' })
   const notificaciones = db.prepare(`
-    SELECT id, tipo_correo, estado_envio, intentos, created_at, ultimo_intento_at, enviado_at, detalle_error
+    SELECT id, tipo_correo, estado_envio, intentos, created_at, ultimo_intento_at, enviado_at, detalle_error,
+           desactivado_motivo
     FROM registro_notificaciones WHERE solicitud_id = ? ORDER BY id DESC
-  `).all(id)
+  `).all(id).map(({ desactivado_motivo: motivo, ...correo }) => ({ ...correo, desactivado: Boolean(motivo), motivo_desactivacion: motivo }))
   response.json({ notificaciones, acceso_pendiente: Boolean(solicitud.cuenta_id && solicitud.debe_cambiar_password) })
 })
 
 // Notificación con el estado de su cliente, cuenta y solicitud, para decidir si se puede reintentar.
 const notificacionSelect = `
   SELECT n.id, n.destinatario_email, n.tipo_correo, n.estado_envio, n.detalle_error, n.intentos,
-         n.created_at, n.ultimo_intento_at, n.enviado_at, n.prospecto_id, n.solicitud_id,
+         n.created_at, n.ultimo_intento_at, n.enviado_at, n.prospecto_id, n.solicitud_id, n.desactivado_motivo,
          p.nombre AS cliente_nombre, p.eliminado_at AS cliente_eliminado_at, COALESCE(c.email, p.email) AS cliente_email,
          s.eliminado_at AS solicitud_eliminada_at, c.id AS cuenta_id, c.debe_cambiar_password,
          (SELECT COUNT(*) FROM cotizaciones_versiones WHERE solicitud_id = n.solicitud_id) AS cotizaciones
@@ -2167,6 +2186,9 @@ const notificacionSelect = `
 `
 // Motivo por el que no se puede reintentar, o null si se puede.
 function motivoSinReintento(fila) {
+  // La validez del enlace es independiente del resultado del envío: un correo desactivado no se reintenta aunque haya fallado.
+  if (fila.desactivado_motivo === 'reemplazado') return 'El enlace de este correo ya no funciona: se reemplazó por uno más reciente. Si hace falta, reenvía el enlace desde el detalle de la solicitud.'
+  if (fila.desactivado_motivo === 'usado') return 'El enlace de este correo ya se usó para crear la contraseña; no hace falta reintentarlo.'
   if (fila.estado_envio !== 'fallido') return 'Solo se pueden reintentar los correos fallidos.'
   if (!fila.prospecto_id) return 'El cliente se eliminó definitivamente; este correo no se puede reintentar.'
   if (fila.cliente_eliminado_at || fila.solicitud_eliminada_at) return 'El cliente o la solicitud están en la papelera; restáuralos para reintentar.'
@@ -2190,23 +2212,32 @@ const notificacionPublica = (fila) => ({
   solicitud_id: fila.prospecto_id ? fila.solicitud_id : null,
   cliente: !fila.prospecto_id ? 'eliminado' : fila.cliente_eliminado_at || fila.solicitud_eliminada_at ? 'papelera' : 'activo',
   cliente_nombre: fila.prospecto_id ? fila.cliente_nombre : null,
+  desactivado: Boolean(fila.desactivado_motivo),
+  motivo_desactivacion: fila.desactivado_motivo,
   puede_reintentar: motivoSinReintento(fila) === null,
 })
 
 const TIPOS_CORREO = new Set(['credenciales', 'cotizacion_lista', 'recordatorio'])
 const ESTADOS_ENVIO = new Set(['pendiente', 'aceptado', 'fallido', 'entregado'])
 const POR_PAGINA_NOTIFICACIONES = 50
+// Filtro "Enlace": aplica a los correos de enlace de acceso (credenciales), así que también limita a ese tipo.
+// "Vigente" exige además un cliente activo: con el cliente en la papelera o eliminado, su enlace ya no sirve.
+const FILTROS_ENLACE = {
+  vigente: " AND n.tipo_correo = 'credenciales' AND n.desactivado_at IS NULL AND n.prospecto_id IS NOT NULL AND p.eliminado_at IS NULL",
+  desactivado: " AND n.tipo_correo = 'credenciales' AND n.desactivado_at IS NOT NULL",
+}
 
 app.get('/api/notificaciones', ...soloAdministrador, (request, response) => {
   const estado = request.query.estado ?? ''
   const tipo = request.query.tipo ?? ''
+  const enlace = request.query.enlace ?? ''
   const pagina = request.query.pagina === undefined ? 1 : idValido(request.query.pagina)
-  if ((estado && !ESTADOS_ENVIO.has(estado)) || (tipo && !TIPOS_CORREO.has(tipo)) || !pagina) {
+  if ((estado && !ESTADOS_ENVIO.has(estado)) || (tipo && !TIPOS_CORREO.has(tipo)) || (enlace && !FILTROS_ENLACE[enlace]) || !pagina) {
     return response.status(400).json({ error: 'Filtro no válido' })
   }
-  const condicion = 'WHERE (? = \'\' OR n.estado_envio = ?) AND (? = \'\' OR n.tipo_correo = ?)'
+  const condicion = `WHERE (? = '' OR n.estado_envio = ?) AND (? = '' OR n.tipo_correo = ?)${enlace ? FILTROS_ENLACE[enlace] : ''}`
   const parametros = [estado, estado, tipo, tipo]
-  const total = Number(db.prepare(`SELECT COUNT(*) AS total FROM registro_notificaciones n ${condicion}`).get(...parametros).total)
+  const total = Number(db.prepare(`SELECT COUNT(*) AS total FROM registro_notificaciones n LEFT JOIN prospectos p ON p.id = n.prospecto_id ${condicion}`).get(...parametros).total)
   const filas = db.prepare(`${notificacionSelect} ${condicion} ORDER BY n.id DESC LIMIT ? OFFSET ?`)
     .all(...parametros, POR_PAGINA_NOTIFICACIONES, (pagina - 1) * POR_PAGINA_NOTIFICACIONES)
   response.json({ notificaciones: filas.map(notificacionPublica), total, pagina, por_pagina: POR_PAGINA_NOTIFICACIONES })
@@ -2223,7 +2254,7 @@ app.post('/api/notificaciones/:id/reintentar', ...soloAdministrador, async (requ
   let token = null
   if (fila.tipo_correo === 'credenciales') {
     // El token anterior nunca se guardó: se emite uno nuevo (invalida los anteriores) y se cierran sesiones.
-    token = emitirTokenEnTransaccion(fila.cuenta_id)
+    token = emitirTokenEnTransaccion(fila.cuenta_id, id)
     cerrarSesionesCuenta(fila.cuenta_id)
   }
   const correo = await reintentarNotificacion({

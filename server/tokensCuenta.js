@@ -13,11 +13,23 @@ export const hashToken = (token) => createHash('sha256').update(token, 'utf8').d
 // Un token con otro formato nunca coincide: se descarta antes de tocar la base.
 export const formatoTokenValido = (token) => typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token)
 
-// Emite un token nuevo para la cuenta y borra los anteriores del mismo tipo. Debe llamarse dentro de la
-// transacción que crea o modifica la cuenta. Devuelve el token en claro, solo para armar el correo.
-export function emitirTokenCuenta(cuentaId, tipo = 'crear_contrasena') {
+// Correos de credenciales de la cuenta cuyo enlace sigue vigente se marcan como desactivados con el motivo dado.
+// `conservarId` excluye la notificación que se está reintentando (reutiliza su fila con el enlace nuevo).
+export function desactivarCorreosCredenciales(cuentaId, motivo, conservarId = null) {
+  db.prepare(`
+    UPDATE registro_notificaciones SET desactivado_at = CURRENT_TIMESTAMP, desactivado_motivo = ?
+    WHERE tipo_correo = 'credenciales' AND desactivado_at IS NULL AND id IS NOT ?
+      AND prospecto_id = (SELECT prospecto_id FROM cuentas_cliente WHERE id = ?)
+  `).run(motivo, conservarId, cuentaId)
+}
+
+// Emite un token nuevo para la cuenta, borra los anteriores del mismo tipo y marca como 'reemplazado' los correos
+// de credenciales anteriores. Debe llamarse dentro de la transacción que crea o modifica la cuenta, para que la
+// invalidación de tokens y la marca de los correos ocurran juntas. Devuelve el token en claro, solo para el correo.
+export function emitirTokenCuenta(cuentaId, tipo = 'crear_contrasena', { conservarNotificacionId = null } = {}) {
   const token = randomBytes(32).toString('base64url')
   db.prepare('DELETE FROM tokens_cuenta WHERE cuenta_id = ? AND tipo = ?').run(cuentaId, tipo)
+  desactivarCorreosCredenciales(cuentaId, 'reemplazado', conservarNotificacionId)
   db.prepare(`
     INSERT INTO tokens_cuenta (cuenta_id, tipo, token_hash, expira_at)
     VALUES (?, ?, ?, datetime('now', ?))

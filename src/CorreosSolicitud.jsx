@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import AvisoCorreo from "./AvisoCorreo.jsx";
 import Modal from "./Modal.jsx";
 import { BOTON_PRIMARIO, BOTON_SECUNDARIO } from "./ui.js";
-import { ESTADOS_CORREO, fechaHora, TIPOS_CORREO } from "./correosComunes.js";
+import { ESTADOS_CORREO, fechaHora, textoDesactivado, TIPOS_CORREO } from "./correosComunes.js";
 
 // Bloque "Correos" del detalle de la solicitud (agente responsable y administrador): estado de cada correo y
 // botón para reenviar el enlace de acceso mientras el cliente no haya creado su contraseña.
@@ -45,7 +45,10 @@ export default function CorreosSolicitud({ token, solicitudId }) {
   return (
     <section className="mt-6 space-y-3 border-t pt-5">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="font-semibold">Correos al cliente</h3>
+        <div>
+          <h3 className="font-semibold">Correos al cliente</h3>
+          <p className="text-xs text-slate-500">"Desactivado" significa que el enlace de ese correo ya no funciona; el estado indica si el correo se envió.</p>
+        </div>
         {datos.acceso_pendiente && <button type="button" onClick={() => { setResultado(null); setConfirmando(true); }} className={BOTON_SECUNDARIO}>Reenviar enlace de acceso</button>}
       </div>
       <AvisoCorreo correo={resultado} tipo="credenciales" />
@@ -59,8 +62,12 @@ export default function CorreosSolicitud({ token, solicitudId }) {
                 <p className="font-medium text-slate-800">{TIPOS_CORREO[correo.tipo_correo] ?? correo.tipo_correo}</p>
                 <p className="text-xs text-slate-500">{fechaHora(correo.ultimo_intento_at ?? correo.created_at)}{correo.intentos > 1 ? ` · ${correo.intentos} intentos` : ""}</p>
                 {correo.estado_envio === "fallido" && correo.detalle_error && <p className="break-words text-xs text-amber-800">{correo.detalle_error}</p>}
+                {correo.desactivado && <p className="text-xs text-slate-500">{textoDesactivado(correo.motivo_desactivacion)}</p>}
               </div>
-              <span className={`self-start rounded-full px-2.5 py-0.5 text-xs font-semibold ${ESTADOS_CORREO[correo.estado_envio]?.clase ?? ""}`}>{ESTADOS_CORREO[correo.estado_envio]?.etiqueta ?? correo.estado_envio}</span>
+              <div className="flex flex-wrap gap-1 self-start">
+                <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${ESTADOS_CORREO[correo.estado_envio]?.clase ?? ""}`}>{ESTADOS_CORREO[correo.estado_envio]?.etiqueta ?? correo.estado_envio}</span>
+                {correo.desactivado && <span title={textoDesactivado(correo.motivo_desactivacion)} className="rounded-full bg-slate-200 px-2.5 py-0.5 text-xs font-semibold text-slate-600">Desactivado</span>}
+              </div>
             </li>
           ))}
         </ul>

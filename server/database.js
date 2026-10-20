@@ -88,6 +88,9 @@ for (const [nombre, tipo] of [
 }
 
 // ATLAS v2, Fase A: columnas nuevas, todas con NULL o valor por defecto para conservar los registros existentes.
+// Se anota antes de agregar columnas: la marca de enlaces reemplazados solo se calcula la vez que se crea la columna.
+const sinDesactivacion = !db.prepare('PRAGMA table_info(registro_notificaciones)').all().some((columna) => columna.name === 'desactivado_at')
+
 for (const [tabla, columnas] of [
   ['prospectos', [
     ['etapa_cliente', "TEXT NOT NULL DEFAULT 'prospecto' CHECK (etapa_cliente IN ('prospecto', 'cliente_instalado'))"],
@@ -121,6 +124,9 @@ for (const [tabla, columnas] of [
     ['intentos', 'INTEGER NOT NULL DEFAULT 0 CHECK (intentos >= 0)'],
     ['ultimo_intento_at', 'TEXT'],
     ['archivo', 'TEXT'],
+    // Validez del enlace (ver el bloque de migración de datos más abajo).
+    ['desactivado_at', 'TEXT'],
+    ['desactivado_motivo', "TEXT CHECK (desactivado_motivo IS NULL OR desactivado_motivo IN ('reemplazado', 'usado'))"],
   ]],
   // Papelera de clientes y estimaciones (borrado lógico). Todo NULL por defecto: no cambia datos existentes.
   ['prospectos', [
@@ -147,6 +153,27 @@ for (const [tabla, columnas] of [
 db.exec('CREATE INDEX IF NOT EXISTS notificaciones_solicitud_idx ON registro_notificaciones(solicitud_id, created_at);')
 db.exec('CREATE INDEX IF NOT EXISTS prospectos_eliminado_idx ON prospectos(eliminado_at);')
 db.exec('CREATE INDEX IF NOT EXISTS solicitudes_eliminado_idx ON solicitudes_cotizacion(prospecto_id, eliminado_at);')
+
+// Enlaces de acceso ya existentes: un correo de credenciales con otro más reciente de la misma cuenta (mismo
+// prospecto) tenía un enlace que dejó de funcionar al emitirse el siguiente. Se marca 'reemplazado' con la fecha
+// del correo inmediato siguiente. No se marca 'usado' retroactivamente: no consta qué enlace se usó.
+// Las notificaciones anonimizadas (sin prospecto) no se pueden relacionar con una cuenta y quedan sin marca.
+if (sinDesactivacion) {
+  db.exec(`
+    UPDATE registro_notificaciones AS n
+    SET desactivado_motivo = 'reemplazado',
+        desactivado_at = (
+          SELECT siguiente.created_at FROM registro_notificaciones siguiente
+          WHERE siguiente.tipo_correo = 'credenciales' AND siguiente.prospecto_id = n.prospecto_id AND siguiente.id > n.id
+          ORDER BY siguiente.id LIMIT 1
+        )
+    WHERE n.tipo_correo = 'credenciales' AND n.prospecto_id IS NOT NULL AND n.desactivado_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM registro_notificaciones siguiente
+        WHERE siguiente.tipo_correo = 'credenciales' AND siguiente.prospecto_id = n.prospecto_id AND siguiente.id > n.id
+      )
+  `)
+}
 
 // Copia en <carpeta de la base>/backups/ (data/backups/ en uso normal; la carpeta temporal en las pruebas).
 export function respaldarBase(etiqueta) {

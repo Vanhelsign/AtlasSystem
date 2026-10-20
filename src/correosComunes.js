@@ -12,6 +12,15 @@ export const ESTADOS_CORREO = {
   entregado: { etiqueta: "Entregado", clase: "bg-green-100 text-green-800" },
 };
 
-export const fechaHora = (valor) => valor
+// Validez del enlace de un correo de acceso, independiente del estado de envío.
+export const MOTIVOS_DESACTIVACION = {
+  reemplazado: "Reemplazado por un enlace más reciente",
+  usado: "Ya se usó para crear la contraseña",
+};
+
+// Etiqueta gris "Desactivado" con su motivo, junto al estado de envío.
+export const textoDesactivado = (motivo) => MOTIVOS_DESACTIVACION[motivo] ?? "El enlace ya no funciona";
+
+export const fechaHora =(valor) => valor
   ? new Date(`${valor.replace(" ", "T")}Z`).toLocaleString("es-MX", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
   : "—";

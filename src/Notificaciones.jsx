@@ -3,7 +3,7 @@ import Aviso from "./Aviso.jsx";
 import Modal from "./Modal.jsx";
 import useAviso from "./useAviso.js";
 import { BOTON_PRIMARIO, BOTON_SECUNDARIO, CAMPO, ETIQUETA } from "./ui.js";
-import { ESTADOS_CORREO, fechaHora, TIPOS_CORREO } from "./correosComunes.js";
+import { ESTADOS_CORREO, fechaHora, textoDesactivado, TIPOS_CORREO } from "./correosComunes.js";
 
 const CLIENTE = {
   papelera: { etiqueta: "En papelera", clase: "bg-amber-50 text-amber-800" },
@@ -16,19 +16,20 @@ const CLIENTE = {
 export default function Notificaciones({ token }) {
   const [estado, setEstado] = useState("");
   const [tipo, setTipo] = useState("");
+  const [enlace, setEnlace] = useState("");
   const [pagina, setPagina] = useState(1);
   const [version, setVersion] = useState(0);
   const [resultado, setResultado] = useState({ clave: null, notificaciones: [], total: 0, por_pagina: 50, error: "" });
   const [porReintentar, setPorReintentar] = useState(null);
   const [aviso, avisar, cerrarAviso] = useAviso();
-  const clave = `${estado}|${tipo}|${pagina}|${version}`;
+  const clave = `${estado}|${tipo}|${enlace}|${pagina}|${version}`;
   const cargando = resultado.clave !== clave;
   const paginas = Math.max(1, Math.ceil(resultado.total / resultado.por_pagina));
 
   useEffect(() => {
     const controller = new AbortController();
-    const claveActual = `${estado}|${tipo}|${pagina}|${version}`;
-    const consulta = new URLSearchParams({ ...(estado && { estado }), ...(tipo && { tipo }), pagina: String(pagina) });
+    const claveActual = `${estado}|${tipo}|${enlace}|${pagina}|${version}`;
+    const consulta = new URLSearchParams({ ...(estado && { estado }), ...(tipo && { tipo }), ...(enlace && { enlace }), pagina: String(pagina) });
     fetch(`/api/notificaciones?${consulta}`, { signal: controller.signal, headers: { Authorization: `Bearer ${token}` } })
       .then(async (response) => {
         const data = await response.json().catch(() => ({}));
@@ -39,7 +40,7 @@ export default function Notificaciones({ token }) {
         if (error.name !== "AbortError") setResultado({ clave: claveActual, notificaciones: [], total: 0, por_pagina: 50, error: error.message });
       });
     return () => controller.abort();
-  }, [token, estado, tipo, pagina, version]);
+  }, [token, estado, tipo, enlace, pagina, version]);
 
   const cambiarFiltro = (aplicar) => (event) => { aplicar(event.target.value); setPagina(1); };
 
@@ -59,10 +60,10 @@ export default function Notificaciones({ token }) {
     <div className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Notificaciones</h1>
-        <p className="mt-1 text-sm text-slate-500">Correos enviados a los clientes. "Aceptado" significa que el servidor de correo lo recibió, no que llegó al buzón; "Pendiente" es un correo del modo simulado.</p>
+        <p className="mt-1 text-sm text-slate-500">Correos enviados a los clientes. El estado indica el resultado del envío: "Aceptado" significa que el servidor de correo lo recibió, no que llegó al buzón; "Pendiente" es un correo del modo simulado. "Desactivado" en un enlace de acceso significa que ese enlace ya no funciona, porque se envió uno más reciente o ya se usó para crear la contraseña.</p>
       </div>
       <Aviso aviso={aviso} onCerrar={cerrarAviso} />
-      <div className="grid gap-3 sm:grid-cols-[220px_220px_1fr] sm:items-end">
+      <div className="grid gap-3 sm:grid-cols-[200px_200px_200px_1fr] sm:items-end">
         <label className={ETIQUETA}>Estado
           <select value={estado} onChange={cambiarFiltro(setEstado)} className={CAMPO}>
             <option value="">Todos</option>
@@ -74,6 +75,14 @@ export default function Notificaciones({ token }) {
             <option value="">Todos</option>
             {Object.entries(TIPOS_CORREO).map(([valor, etiqueta]) => <option key={valor} value={valor}>{etiqueta}</option>)}
           </select>
+        </label>
+        <label className={ETIQUETA}>Enlace
+          <select value={enlace} onChange={cambiarFiltro(setEnlace)} className={CAMPO}>
+            <option value="">Todos</option>
+            <option value="vigente">Vigente</option>
+            <option value="desactivado">Desactivado</option>
+          </select>
+          <span className="mt-1 block text-xs font-normal text-slate-500">Solo enlaces de acceso.</span>
         </label>
         <p className="text-sm text-slate-500 sm:text-right">{resultado.total} {resultado.total === 1 ? "notificación" : "notificaciones"}</p>
       </div>
@@ -94,7 +103,13 @@ export default function Notificaciones({ token }) {
                 </td>
                 <td className="p-3 text-slate-600">{TIPOS_CORREO[notificacion.tipo] ?? notificacion.tipo}</td>
                 <td className="p-3 text-slate-600">{fechaHora(notificacion.ultimo_intento_at ?? notificacion.creada_at)}</td>
-                <td className="p-3"><span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${ESTADOS_CORREO[notificacion.estado]?.clase ?? ""}`}>{ESTADOS_CORREO[notificacion.estado]?.etiqueta ?? notificacion.estado}</span></td>
+                <td className="p-3">
+                  <div className="flex flex-wrap gap-1">
+                    <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${ESTADOS_CORREO[notificacion.estado]?.clase ?? ""}`}>{ESTADOS_CORREO[notificacion.estado]?.etiqueta ?? notificacion.estado}</span>
+                    {notificacion.desactivado && <span className="rounded-full bg-slate-200 px-2.5 py-0.5 text-xs font-semibold text-slate-600">Desactivado</span>}
+                  </div>
+                  {notificacion.desactivado && <span className="mt-1 block text-xs text-slate-500">{textoDesactivado(notificacion.motivo_desactivacion)}</span>}
+                </td>
                 <td className="p-3 text-slate-600">{notificacion.intentos}</td>
                 <td className="max-w-xs break-words p-3 text-xs text-slate-600">{notificacion.detalle || "—"}</td>
                 <td className="p-3">
