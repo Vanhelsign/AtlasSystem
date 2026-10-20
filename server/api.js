@@ -8,7 +8,8 @@ import { db, getProspecto, prospectSelect } from './database.js'
 import { ESTADOS_MEXICO, nombreEstadoMexico, normalizarEstadoMexico } from '../shared/estadosMexico.js'
 import { estimarAhorro, faltantesDeTarifa, kwpDePaneles, PARAMETROS_POR_DEFECTO, validarBloques } from '../shared/ahorroSolar.js'
 import { horasSolaresPico } from '../shared/irradiacion.js'
-import { describirModoCorreo, enviarCotizacionLista, enviarCredenciales, generarContrasenaTemporal } from './correo.js'
+import { describirModoCorreo, enviarCotizacionLista, enviarCredenciales } from './correo.js'
+import { buscarTokenVigente, consumirToken, emitirTokenCuenta, HORAS_VIGENCIA_ENLACE } from './tokensCuenta.js'
 
 const app = express()
 // Solo se confía en X-Forwarded-For cuando la petición llega desde un proxy local (el de Vite en desarrollo).
@@ -172,6 +173,8 @@ const limiteCambioContrasena = crearLimitador({ maximo: 5, ventanaMs: 10 * 60 * 
 const ventanaLoginMs = enteroEntorno('ATLAS_LOGIN_VENTANA_MIN', 15) * 60 * 1000
 const limiteLoginCuenta = crearLimitador({ maximo: enteroEntorno('ATLAS_LOGIN_MAX_CUENTA', 5), ventanaMs: ventanaLoginMs })
 const limiteLoginIp = crearLimitador({ maximo: enteroEntorno('ATLAS_LOGIN_MAX_IP', 20), ventanaMs: ventanaLoginMs })
+// Enlaces para crear contraseña: 10 tokens inválidos por IP en 15 minutos, sumando validar y crear.
+const limiteEnlaceIp = crearLimitador({ maximo: enteroEntorno('ATLAS_ENLACE_MAX_IP', 10), ventanaMs: 15 * 60 * 1000 })
 
 // Tokens cerrados por un motivo conocido, para explicar el 401 en la otra ventana. Se descartan a las 24 h.
 const sesionesRevocadas = new Map()
@@ -657,6 +660,65 @@ app.post('/api/portal/cambiar-contrasena', autenticar, permitirRoles('Cliente'),
   }
   request.usuario.debe_cambiar_password = false
   response.json({ actualizada: true, sesiones_cerradas: cerradas })
+})
+
+// Enlace "Crea tu contraseña" (rutas públicas). El token llega en el cuerpo, nunca en la URL, y no se registra.
+// Inexistente, vencido o usado responden igual para no revelar cuál fue el motivo.
+const ENLACE_INVALIDO = { error: 'El enlace no es válido o venció. Pide a tu agente que lo reenvíe.', codigo: 'enlace_invalido' }
+
+function revisarEnlace(request, response) {
+  const ip = request.ip ?? 'desconocida'
+  const minutos = limiteEnlaceIp.minutosBloqueo(ip)
+  if (minutos) {
+    response.status(429).json({ error: `Demasiados intentos con enlaces no válidos desde esta conexión. Espera ${minutosTexto(minutos)} e inténtalo de nuevo.`, codigo: 'limite_enlace' })
+    return null
+  }
+  const vigente = buscarTokenVigente(request.body?.token)
+  if (!vigente) {
+    limiteEnlaceIp.registrarFallo(ip)
+    response.status(400).json(ENLACE_INVALIDO)
+    return null
+  }
+  return vigente
+}
+
+// Solo consulta: abrir o validar el enlace nunca lo consume.
+app.post('/api/portal/validar-enlace', (request, response) => {
+  if (revisarEnlace(request, response)) response.json({ valido: true })
+})
+
+app.post('/api/portal/crear-contrasena', (request, response) => {
+  const vigente = revisarEnlace(request, response)
+  if (!vigente) return
+  const { nueva, confirmacion } = request.body
+  // Los errores de la contraseña no consumen el token: el cliente puede corregir y reintentar.
+  if (typeof nueva !== 'string' || nueva.length < 8) return response.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres', campo: 'nueva' })
+  if (nueva.length > 200) return response.status(400).json({ error: 'La contraseña no debe superar 200 caracteres', campo: 'nueva' })
+  if (confirmacion !== nueva) return response.status(400).json({ error: 'La confirmación no coincide con la contraseña', campo: 'confirmacion' })
+
+  const credencial = hashPassword(nueva)
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    // Consumo atómico y de un solo uso: solo una petición logra marcar el token como usado.
+    if (!consumirToken(vigente.id)) {
+      db.exec('ROLLBACK')
+      return response.status(400).json(ENLACE_INVALIDO)
+    }
+    db.prepare(`
+      UPDATE cuentas_cliente
+      SET password_hash = ?, password_salt = ?, debe_cambiar_password = 0, password_actualizada_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(credencial.hash, credencial.salt, vigente.cuenta_id)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+  // Cierra cualquier sesión abierta de la cuenta y no inicia sesión: el cliente entra desde el login.
+  for (const [token, sesion] of [...sesiones]) {
+    if (sesion.cuenta_id === vigente.cuenta_id && sesion.rol === 'Cliente') revocarSesion(token, 'contrasena_cambiada')
+  }
+  response.json({ creada: true })
 })
 
 app.get('/api/productos', autenticar, permitirRoles('Administrador', 'Agente', 'Técnico'), (request, response) => {
@@ -1777,7 +1839,7 @@ app.post('/api/agente/solicitudes/:id/devolver', autenticar, permitirRoles('Agen
 })
 
 app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), async (request, response) => {
-  let nombre, email, prospectoId, solicitudId, contrasenaTemporal
+  let nombre, email, prospectoId, solicitudId, tokenEnlace
   try {
     const cliente = request.body.cliente ?? {}
     nombre = textoRequerido(cliente.nombre, 'nombre')
@@ -1833,13 +1895,14 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), async (request
         direccion.numeroInterior,
       )
 
-      // Contraseña temporal aleatoria: solo viaja en el correo de credenciales; nunca se registra ni se devuelve.
-      contrasenaTemporal = generarContrasenaTemporal()
-      const credencial = hashPassword(contrasenaTemporal)
-      db.prepare(`
+      // Contraseña aleatoria que nadie conoce (se descarta tras el hash): el cliente crea la suya con el enlace
+      // de un solo uso del correo. El token solo viaja en ese correo; la base guarda su hash.
+      const credencial = hashPassword(randomBytes(32).toString('base64url'))
+      const cuentaId = Number(db.prepare(`
         INSERT INTO cuentas_cliente (prospecto_id, email, password_hash, password_salt, rol, debe_cambiar_password)
         VALUES (?, ?, ?, ?, 'Cliente', 1)
-      `).run(prospectoId, email, credencial.hash, credencial.salt)
+      `).run(prospectoId, email, credencial.hash, credencial.salt).lastInsertRowid)
+      tokenEnlace = emitirTokenCuenta(cuentaId)
 
       solicitudId = Number(db.prepare(`
         INSERT INTO solicitudes_cotizacion (
@@ -1912,8 +1975,8 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), async (request
   }
 
   // El correo se envía después del COMMIT: si falla, la solicitud ya quedó registrada y el fallo queda en
-  // registro_notificaciones. La respuesta lleva el estado del correo, nunca la contraseña.
-  const correo = await enviarCredenciales({ destinatario: email, nombre, contrasenaTemporal, prospectoId, solicitudId })
+  // registro_notificaciones. La respuesta lleva el estado del correo, nunca el enlace ni el token.
+  const correo = await enviarCredenciales({ destinatario: email, nombre, token: tokenEnlace, horasVigencia: HORAS_VIGENCIA_ENLACE, prospectoId, solicitudId })
   response.status(201).json({ registro: getProspecto(prospectoId), solicitud: getSolicitud(solicitudId), correo })
 })
 

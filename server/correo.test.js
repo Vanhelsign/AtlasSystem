@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:net'
 import { iniciarServidorPrueba, registrarSolicitudPrueba } from './pruebas/servidorPrueba.js'
 
-const contrasenaDelCorreo = (correo) => /Contraseña temporal: (\S+)/.exec(correo.texto)?.[1]
+const tokenDelCorreo = (correo) => /#crear-contrasena=([A-Za-z0-9_-]{43})/.exec(correo.texto)?.[1]
 const notificaciones = (servidor) => servidor.sqlTodas('SELECT * FROM registro_notificaciones ORDER BY id')
 
 // SMTP mínimo: responde según `modo` ('acepta', 'rechaza' destinatario o 'mudo' sin saludo).
@@ -83,10 +83,11 @@ describe('modo simulado (sin SMTP)', () => {
     assert.deepEqual(servidor.correos(), [correo.archivo])
     const eml = servidor.leerCorreo(correo.archivo)
     assert.match(eml.encabezados.to, /nuevo@ejemplo\.com/)
-    assert.match(eml.encabezados.subject, /acceso al portal de ATLAS|=\?UTF-8\?/)
-    assert.ok(eml.texto.includes('http://atlas.example'))
-    assert.match(contrasenaDelCorreo(eml), /^[A-Za-z2-9]{12}$/)
-    assert.ok(eml.html.includes('Entrar al portal'))
+    assert.match(eml.encabezados.subject, /Crea tu contrase|=\?UTF-8\?/)
+    assert.ok(eml.texto.includes(`http://atlas.example/#crear-contrasena=${tokenDelCorreo(eml)}`))
+    assert.ok(eml.html.includes('Crear mi contraseña'))
+    assert.match(eml.texto, /48 horas/)
+    assert.doesNotMatch(eml.texto + eml.html, /contraseña temporal/i)
 
     const [fila] = notificaciones(servidor)
     assert.equal(fila.tipo_correo, 'credenciales')
@@ -100,26 +101,25 @@ describe('modo simulado (sin SMTP)', () => {
     assert.equal(fila.prospecto_id, registro.registro.id)
   })
 
-  test('la contraseña temporal no aparece en la respuesta, en la base ni en la consola del servidor', () => {
-    const contrasena = contrasenaDelCorreo(servidor.leerCorreo(registro.correo.archivo))
-    assert.ok(!JSON.stringify(registro).includes(contrasena))
-    assert.ok(!JSON.stringify(notificaciones(servidor)).includes(contrasena))
-    assert.ok(!servidor.salida().includes(contrasena))
+  test('el token del enlace no aparece en la respuesta, en la base ni en la consola del servidor', () => {
+    const token = tokenDelCorreo(servidor.leerCorreo(registro.correo.archivo))
+    assert.ok(!JSON.stringify(registro).includes(token))
+    assert.ok(!JSON.stringify(notificaciones(servidor)).includes(token))
+    assert.ok(!JSON.stringify(servidor.sqlTodas('SELECT * FROM tokens_cuenta')).includes(token), 'la base guarda solo el hash')
+    assert.ok(!servidor.salida().includes(token))
     assert.match(servidor.salida(), /modo simulado/)
   })
 
-  test('la contraseña temporal obliga a cambiarla; la 123 ya no sirve para cuentas nuevas', async () => {
-    const contrasena = contrasenaDelCorreo(servidor.leerCorreo(registro.correo.archivo))
+  test('la cuenta nueva tiene una contraseña que nadie conoce; entra después de crearla con el enlace', async () => {
     assert.equal((await servidor.iniciarSesion('nuevo@ejemplo.com', '123')).estado, 401)
-    const { estado, datos } = await servidor.iniciarSesion('nuevo@ejemplo.com', contrasena)
+    const [cuenta] = servidor.sqlTodas("SELECT debe_cambiar_password FROM cuentas_cliente WHERE email = 'nuevo@ejemplo.com'")
+    assert.equal(cuenta.debe_cambiar_password, 1)
+    const token = tokenDelCorreo(servidor.leerCorreo(registro.correo.archivo))
+    const creada = await servidor.pedir('/portal/crear-contrasena', { metodo: 'POST', cuerpo: { token, nueva: 'ClavePropia2026', confirmacion: 'ClavePropia2026' } })
+    assert.equal(creada.estado, 200)
+    const { estado, datos } = await servidor.iniciarSesion('nuevo@ejemplo.com', 'ClavePropia2026')
     assert.equal(estado, 200)
-    assert.equal(datos.debe_cambiar_password, true)
-    const portal = await servidor.pedir(`/portal/prospectos/${registro.registro.id}`, { token: datos.token })
-    assert.equal(portal.estado, 403)
-    assert.equal(portal.datos.codigo, 'debe_cambiar_password')
-    const cambio = await servidor.pedir('/portal/cambiar-contrasena', { metodo: 'POST', token: datos.token, cuerpo: { actual: contrasena, nueva: 'ClavePropia2026', confirmacion: 'ClavePropia2026' } })
-    assert.equal(cambio.estado, 200)
-    assert.equal((await servidor.iniciarSesion('nuevo@ejemplo.com', 'ClavePropia2026')).datos.debe_cambiar_password, false)
+    assert.equal(datos.debe_cambiar_password, false)
   })
 
   test('las cuentas de personal siguen entrando con 123 sin cambio obligatorio', async () => {

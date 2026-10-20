@@ -306,6 +306,19 @@ CREATE TABLE IF NOT EXISTS registro_notificaciones (
   FOREIGN KEY (prospecto_id) REFERENCES prospectos(id) ON DELETE SET NULL
 );
 
+-- Fase 4a: enlaces de un solo uso para que el cliente cree su contraseña. Solo se guarda el hash SHA-256
+-- del token; el token viaja únicamente en el correo. Emitir uno nuevo borra los anteriores de la cuenta.
+CREATE TABLE IF NOT EXISTS tokens_cuenta (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cuenta_id INTEGER NOT NULL REFERENCES cuentas_cliente(id) ON DELETE CASCADE,
+  tipo TEXT NOT NULL CHECK (tipo IN ('crear_contrasena')),
+  token_hash TEXT NOT NULL UNIQUE,
+  expira_at TEXT NOT NULL,
+  usado_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS tokens_cuenta_idx ON tokens_cuenta(cuenta_id, tipo);
+
 CREATE INDEX IF NOT EXISTS ordenes_tecnico_idx ON ordenes_instalacion(tecnico_id, estatus_obra);
 CREATE INDEX IF NOT EXISTS checklist_orden_idx ON checklist_evidencias(orden_id);
 CREATE INDEX IF NOT EXISTS mantenimientos_fecha_idx ON mantenimientos_programados(estatus, fecha_limite);

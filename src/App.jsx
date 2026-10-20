@@ -14,6 +14,8 @@ import EmisionAhorro, { ModalEmitirCotizacion } from "./EmisionAhorro.jsx";
 import Modal from "./Modal.jsx";
 import AvisoCorreo from "./AvisoCorreo.jsx";
 import FormularioCambioContrasena, { PantallaCambioObligatorio } from "./CambiarContrasena.jsx";
+import CrearContrasena from "./CrearContrasena.jsx";
+import { tomarTokenDeEnlace } from "./enlaceAcceso.js";
 import { ESTADOS_MEXICO, nombreEstadoMexico } from "../shared/estadosMexico.js";
 
 // ─────────────────────────────────────────────────────────
@@ -725,6 +727,9 @@ function GeneradorCotizacion({ lead, resultadoSolar, inventario, onGuardar }) {
 // ─────────────────────────────────────────────────────────
 //  APP PRINCIPAL — ENRUTADOR POR ROLES
 // ─────────────────────────────────────────────────────────
+// Enlace "Crea tu contraseña" del correo: se lee una sola vez al cargar y se quita de la barra de direcciones.
+const tokenEnlaceInicial = tomarTokenDeEnlace();
+
 export default function App() {
   const [usuarioActual, setUsuarioActual] = useState(null);
 
@@ -745,6 +750,7 @@ export default function App() {
   const [errorPortal, setErrorPortal] = useState("");
   const [registroExitoso, setRegistroExitoso] = useState(null);
   const [avisoLogin, setAvisoLogin] = useState("");
+  const [tokenEnlace, setTokenEnlace] = useState(tokenEnlaceInicial);
 
   const limpiarSesion = () => {
     setUsuarioActual(null);
@@ -761,6 +767,15 @@ export default function App() {
     setAvisoLogin(MENSAJES_SESION_CERRADA[motivo] ?? MENSAJES_SESION_CERRADA.sesion_vencida);
   });
   useEffect(() => instalarManejoSesion({ tokenActual: () => tokenSesion(), onSesionCerrada: (motivo) => sesionCerrada(motivo) }), []);
+  // Un enlace abierto con la app ya cargada (por ejemplo, pegado en la barra) también se atiende.
+  useEffect(() => {
+    const alCambiarFragmento = () => {
+      const token = tomarTokenDeEnlace();
+      if (token) setTokenEnlace(token);
+    };
+    window.addEventListener("hashchange", alCambiarFragmento);
+    return () => window.removeEventListener("hashchange", alCambiarFragmento);
+  }, []);
 
   useEffect(() => {
     if (!usuarioActual || !["Administrador", "Agente"].includes(usuarioActual.rol)) return;
@@ -876,6 +891,14 @@ export default function App() {
     return data;
   };
 
+  // La pantalla del enlace no inicia sesión: al salir vuelve al login (y cierra una sesión abierta en esta pestaña).
+  const salirDelEnlace = (aviso) => {
+    if (usuarioActual) fetch("/api/logout", { method: "POST", headers: { Authorization: `Bearer ${usuarioActual.token}` } }).catch(() => {});
+    limpiarSesion();
+    setAvisoLogin(aviso);
+    setTokenEnlace(null);
+  };
+  if (tokenEnlace) return <CrearContrasena key={tokenEnlace} token={tokenEnlace} onCreada={() => salirDelEnlace("Contraseña creada. Inicia sesión.")} onIrALogin={() => salirDelEnlace("")} />;
   if (!usuarioActual) return <Login onLogin={autenticarUsuario} aviso={avisoLogin} />;
 
   // Filtrado de menú lateral según el rol
@@ -1003,7 +1026,7 @@ export default function App() {
         >
           <dl className="grid gap-3 text-sm sm:grid-cols-2">
             <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Cuenta del cliente</dt><dd className="break-all font-semibold">{registroExitoso.email}</dd></div>
-            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Contraseña</dt><dd className="font-semibold">Temporal, enviada por correo. El cliente debe cambiarla al entrar.</dd></div>
+            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Acceso</dt><dd className="font-semibold">Se envió un enlace de acceso para que el cliente cree su contraseña.</dd></div>
           </dl>
           <AvisoCorreo correo={registroExitoso.correo} tipo="credenciales" destinatario={registroExitoso.email} />
         </Modal>}

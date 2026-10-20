@@ -5,16 +5,15 @@
 // SMTP real: "aceptado" cuando el servidor SMTP acepta el mensaje y "fallido" con detalle si falla o se agota
 // el tiempo. "entregado" no se usa: requeriría una confirmación del proveedor que hoy no existe.
 //
-// Reglas de seguridad: no se imprimen ni se guardan credenciales SMTP ni contraseñas temporales. La contraseña
-// temporal solo viaja dentro del mensaje (y, en modo simulado, dentro del .eml local).
+// Reglas de seguridad: no se imprimen ni se guardan credenciales SMTP ni el enlace de acceso. El enlace (con su
+// token) solo viaja dentro del mensaje; en modo simulado, el .eml local es la única otra copia.
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import nodemailer from 'nodemailer'
 import { db } from './database.js'
 import { configuracionCorreo, limpiarDetalleError } from './correoUtil.js'
 import { PLANTILLAS } from './plantillasCorreo.js'
-
-export { generarContrasenaTemporal } from './correoUtil.js'
+import { enlaceCrearContrasena } from './tokensCuenta.js'
 
 const config = configuracionCorreo()
 let transporte = null
@@ -116,8 +115,10 @@ export async function enviarCorreo({ tipo, destinatario, nombre, datos = {}, pro
   return intentarEnvio(id, tipo, { from: config.remitente, to: destinatario, subject: asunto, text: texto, html })
 }
 
-export function enviarCredenciales({ destinatario, nombre, contrasenaTemporal, prospectoId, solicitudId }) {
-  return enviarCorreo({ tipo: 'credenciales', destinatario, nombre, datos: { contrasenaTemporal }, prospectoId, solicitudId })
+// El enlace lleva el token en el fragmento (#), que el navegador no envía al servidor ni en Referer.
+export function enviarCredenciales({ destinatario, nombre, token, horasVigencia, prospectoId, solicitudId }) {
+  const enlace = enlaceCrearContrasena(config.urlApp, token)
+  return enviarCorreo({ tipo: 'credenciales', destinatario, nombre, datos: { enlace, horasVigencia }, prospectoId, solicitudId })
 }
 
 export function enviarCotizacionLista({ destinatario, nombre, prospectoId, solicitudId }) {

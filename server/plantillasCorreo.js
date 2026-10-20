@@ -1,6 +1,6 @@
 // Plantillas de correo de ATLAS: funciones puras que devuelven { asunto, texto, html }.
 // Texto plano y HTML sencillo con estilos en línea (los clientes de correo ignoran las hojas de estilo).
-// Nunca incluyen precios ni costos internos; la contraseña temporal solo aparece en el correo de credenciales.
+// Nunca incluyen precios, costos internos ni contraseñas. El enlace de acceso solo aparece en el de credenciales.
 
 const COLOR_PRIMARIO = '#4f46e5'
 const COLOR_TEXTO = '#0f172a'
@@ -47,31 +47,32 @@ ${nota ? `<p style="margin:16px 0 0;font-size:13px;color:${COLOR_SECUNDARIO}">${
 
 const PIE_TEXTO = '\n--\nATLAS CRM\nEste es un mensaje automático. No respondas a este correo.\n'
 
-// Credenciales de acceso al portal, con contraseña temporal que el cliente debe cambiar al entrar.
-export function plantillaCredenciales({ nombre, email, contrasenaTemporal, urlApp }) {
-  const asunto = 'Tu acceso al portal de ATLAS'
+// Acceso al portal: enlace de un solo uso para que el cliente cree su contraseña. Sin contraseña en el correo.
+export function plantillaCredenciales({ nombre, email, enlace, horasVigencia }) {
+  const asunto = 'Crea tu contraseña del portal de ATLAS'
+  const vigencia = `${horasVigencia} horas`
   const texto = [
     saludo(nombre),
     '',
-    'Registramos tu solicitud de dimensionamiento solar. Ya puedes consultar su avance en el portal de clientes de ATLAS.',
+    'Registramos tu solicitud de dimensionamiento solar. Para consultar su avance en el portal de clientes de ATLAS, crea tu contraseña con este enlace:',
     '',
-    `Portal: ${urlApp}`,
+    enlace,
+    '',
     `Correo de acceso: ${email}`,
-    `Contraseña temporal: ${contrasenaTemporal}`,
+    `El enlace funciona una sola vez y vence en ${vigencia}. Si vence, pide a tu agente que te lo reenvíe.`,
     '',
-    'Al iniciar sesión te pediremos cambiar la contraseña temporal por una propia de al menos 8 caracteres.',
-    'Si no solicitaste este registro, ignora este mensaje.',
+    'Si no solicitaste este registro, ignora este correo.',
   ].join('\n') + PIE_TEXTO
   const html = documentoHtml({
-    titulo: 'Tu acceso al portal de ATLAS',
+    titulo: 'Crea tu contraseña',
     parrafos: [
       escaparHtml(saludo(nombre)),
-      'Registramos tu solicitud de dimensionamiento solar. Ya puedes consultar su avance en el portal de clientes de ATLAS.',
-      `<b>Correo de acceso:</b> ${escaparHtml(email)}<br><b>Contraseña temporal:</b> <span style="font-family:Consolas,Menlo,monospace;font-size:16px;background:#eef2ff;padding:2px 6px;border-radius:4px">${escaparHtml(contrasenaTemporal)}</span>`,
-      'Al iniciar sesión te pediremos cambiar la contraseña temporal por una propia de al menos 8 caracteres.',
+      'Registramos tu solicitud de dimensionamiento solar. Para consultar su avance en el portal de clientes de ATLAS, crea tu contraseña.',
+      `<b>Correo de acceso:</b> ${escaparHtml(email)}`,
+      `El enlace funciona una sola vez y vence en <b>${escaparHtml(vigencia)}</b>. Si vence, pide a tu agente que te lo reenvíe.`,
     ],
-    boton: { texto: 'Entrar al portal', url: urlApp },
-    nota: 'Si no solicitaste este registro, ignora este mensaje.',
+    boton: { texto: 'Crear mi contraseña', url: enlace },
+    nota: 'Si no solicitaste este registro, ignora este correo.',
   })
   return { asunto, texto, html }
 }

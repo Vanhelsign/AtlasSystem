@@ -51,7 +51,7 @@ Seguridad:
 
 Correo (Fase 4):
 
-- Contraseña temporal de 12 caracteres sin caracteres ambiguos (unos 69 bits de entropía).
+- Enlace "Crea tu contraseña": token de 32 bytes, vigencia de 48 horas y 10 tokens no válidos por IP en 15 minutos. Son valores iniciales, ajustables con `ATLAS_ENLACE_VIGENCIA_HORAS` y `ATLAS_ENLACE_MAX_IP`.
 - Tiempo máximo de 15 s por envío.
 - Remitente por defecto `ATLAS CRM <no-responder@atlas.example>` y `APP_URL` por defecto `http://localhost:5173`, mientras no se configuren en `.env`.
 - "Aceptado" significa que el servidor SMTP recibió el mensaje, no que llegó al buzón. `entregado` no se usa.
@@ -75,9 +75,12 @@ Seguridad y sesiones:
 - Los tokens cerrados por un cambio de contraseña se recuerdan en memoria hasta 24 horas para explicar el motivo del 401. Tras un reinicio del servidor ese motivo se pierde y el mensaje es el genérico ("Tu sesión se cerró").
 - El login revisa si una cuenta de personal está inactiva antes de verificar la contraseña: responder "La cuenta está inactiva" revela que ese correo existe. Comportamiento existente desde el commit inicial; no se cambió.
 - El indicador "debe cambiar contraseña" se lee al iniciar sesión: una sesión abierta antes de activarlo no se bloquea.
-- El personal de demostración y las cuentas de cliente creadas antes de la Fase 4 usan la contraseña `123`, sin cambio obligatorio (decisión explícita). Las cuentas de cliente nuevas reciben una contraseña temporal por correo.
-- En modo simulado, cada `.eml` de credenciales guarda la contraseña temporal en texto claro dentro de `data/correos/`. La carpeta está en `.gitignore`, pero cualquiera con acceso a la máquina puede leerla; conviene vaciarla cuando ya no se necesite.
-- Hasta la Fase 4b no hay forma de reenviar credenciales: si el correo de una cuenta nueva falla, el cliente no puede entrar hasta que exista el reenvío (o se corrija a mano en la base).
+- El personal de demostración y las cuentas de cliente creadas antes de la Fase 4 usan la contraseña `123`, sin cambio obligatorio (decisión explícita). Las cuentas de cliente nuevas reciben un enlace para crear su contraseña.
+- El enlace del correo apunta a `APP_URL`. Con el valor por defecto (`http://localhost:5173`) solo funciona en la máquina que corre la app; para que un cliente lo abra desde otro equipo, `APP_URL` debe ser una dirección pública o de la red local.
+- Hasta la Fase 4b no hay reenvío: si el enlace vence (48 horas) o el correo de una cuenta nueva falla, el cliente queda sin acceso hasta que exista el reenvío (o se corrija a mano en la base).
+- En modo simulado, cada `.eml` de credenciales contiene el enlace con su token en texto claro dentro de `data/correos/`; es la única copia fuera del correo real. La carpeta está en `.gitignore`, pero cualquiera con acceso a la máquina puede leerla y usar el enlace mientras esté vigente; conviene vaciarla cuando ya no se necesite.
+- Las cuentas creadas con la primera versión de la Fase 4a (commit `7c059c7`) tienen una contraseña temporal en su `.eml`; no se migraron.
+- El límite de enlaces no válidos es por IP y vive en memoria, igual que los del login: se borra al reiniciar el servidor y una red compartida lo agota entre todos.
 
 Funcionalidad:
 
@@ -100,7 +103,7 @@ Datos:
 
 ## Mapa de rutas de la API
 
-Base: `http://localhost:3001/api` (en desarrollo, Vite reenvía `/api` y agrega `X-Forwarded-For`). Todas las rutas salvo `GET /api/health` y `POST /api/login` requieren `Authorization: Bearer <token>`.
+Base: `http://localhost:3001/api` (en desarrollo, Vite reenvía `/api` y agrega `X-Forwarded-For`). Todas las rutas salvo `GET /api/health`, `POST /api/login`, `POST /api/portal/validar-enlace` y `POST /api/portal/crear-contrasena` requieren `Authorization: Bearer <token>`.
 
 Respuestas comunes:
 
@@ -109,13 +112,15 @@ Respuestas comunes:
   - `sesion_vencida`: cualquier otro caso.
 
   El frontend vuelve al login con un aviso ante cualquiera de los dos.
-- 403 con `codigo: debe_cambiar_password`: la cuenta de cliente tiene una contraseña temporal. Toda ruta responde así salvo `POST /api/portal/cambiar-contrasena` y `POST /api/logout`.
+- 403 con `codigo: debe_cambiar_password`: la cuenta de cliente tiene la marca de cambio obligatorio. Toda ruta responde así salvo `POST /api/portal/cambiar-contrasena` y `POST /api/logout`.
 
 | Método | Ruta | Rol permitido | Propósito |
 |---|---|---|---|
 | GET | /api/health | Público | Estado del servidor |
 | POST | /api/login | Público | Inicia sesión de personal o cliente; devuelve token. 401 "Credenciales incorrectas"; 429 por límite de intentos (`codigo: limite_cuenta` o `limite_ip`) |
 | POST | /api/logout | Cualquier sesión | Cierra la sesión actual |
+| POST | /api/portal/validar-enlace | Público | Dice si el token del enlace "Crea tu contraseña" sigue vigente, sin consumirlo. 400 genérico `enlace_invalido`; 429 `limite_enlace` |
+| POST | /api/portal/crear-contrasena | Público | Con token, contraseña y confirmación: consume el token (un solo uso), guarda la contraseña, cierra las sesiones de la cuenta y no inicia sesión. Errores por campo sin consumir el token; 400 genérico `enlace_invalido`; 429 `limite_enlace` |
 | POST | /api/portal/cambiar-contrasena | Cliente | Cambia la contraseña; cierra las demás sesiones de la cuenta (su 401 dirá `contrasena_cambiada`); 429 tras 5 contraseñas actuales incorrectas en 10 minutos |
 | GET | /api/portal/prospectos/:id | Cliente (solo el suyo) | Datos del portal, solicitud y cotización emitida con su estimación de ahorro guardada |
 | GET | /api/productos | Administrador, Agente, Técnico | Catálogo (el administrador ve también inactivos) |
@@ -144,7 +149,7 @@ Respuestas comunes:
 | POST | /api/prospectos | Administrador, Agente | Registra prospecto (ruta antigua; ninguna pantalla la usa) |
 | PATCH | /api/prospectos/:id | Administrador, Agente | Actualiza prospecto (ruta antigua; ninguna pantalla la usa) |
 | PUT | /api/prospectos/:id/consumo | Administrador, Agente | Consumo para la calculadora (sin acceso desde los menús) |
-| POST | /api/solicitudes | Agente | Registra solicitud, dirección y cuenta del cliente con contraseña temporal; rechaza estados no reconocidos. Después del COMMIT envía las credenciales y responde `correo` con su estado (nunca la contraseña) |
+| POST | /api/solicitudes | Agente | Registra solicitud, dirección y cuenta del cliente (contraseña desconocida y marca de cambio) y emite el token del enlace; rechaza estados no reconocidos. Después del COMMIT envía el correo con el enlace y responde `correo` con su estado (nunca el enlace ni el token) |
 | GET | /api/solicitudes/:id | Administrador, Agente (solo las suyas) | Detalle de solicitud |
 | GET | /api/agente/solicitudes/:id/estimacion | Agente responsable | Vista previa del ahorro con la tarifa elegida o la sugerida |
 | POST | /api/agente/solicitudes/:id/aprobar | Agente responsable | Emite la cotización y guarda la estimación de ahorro. Después del COMMIT avisa "cotización lista" y responde `correo` |
@@ -174,7 +179,8 @@ Columnas agregadas sin cambiar `user_version` (idempotentes, en cada arranque):
 - Integración 6 (`6e5e658`): `cotizaciones_versiones.supuestos_ahorro` (JSON).
 - Fase 2 del plan actual (`4ad4702`): `tarifas_bloques.origen_precio`, `tarifas_cfe.origen_cargo_fijo`.
 - Fase 3 del plan actual (`861e96c`): `cuentas_cliente.debe_cambiar_password`, `password_actualizada_at`.
-- Fase 4a (sin commit): `registro_notificaciones.solicitud_id`, `intentos`, `ultimo_intento_at`, `archivo` e índice `notificaciones_solicitud_idx`.
+- Fase 4a (`7c059c7`): `registro_notificaciones.solicitud_id`, `intentos`, `ultimo_intento_at`, `archivo` e índice `notificaciones_solicitud_idx`.
+- Cambio de la Fase 4a (sin commit): tabla nueva `tokens_cuenta` (con `CREATE TABLE IF NOT EXISTS`, sin migración de columnas).
 - Corrección de estados (`2dd526a`): no agrega columnas; en cada arranque completa `direcciones_cliente.estado_codigo` cuando el texto se reconoce y reporta las que no.
 
 Tablas y en qué commit aparecieron:
@@ -205,14 +211,52 @@ Tablas y en qué commit aparecieron:
 | tarifas_bloques | 6e5e658 | Bloques por temporada |
 | tarifas_estados | 6e5e658 | Tarifa sugerida por estado |
 | parametros_ahorro | 6e5e658 | Parámetros de la estimación |
+| tokens_cuenta | cambio de la Fase 4a (sin commit) | Hash de los tokens de un solo uso del enlace "Crea tu contraseña" |
 
 ---
 
 ## Historial
 
+### Fase 4a, cambio: enlace "Crea tu contraseña" en lugar de contraseña temporal
+
+- Estado: **implementado. Sin commit.** Cambia el correo de credenciales de la entrada siguiente (Fase 4a, commit `7c059c7`). La Fase 4b sigue pendiente.
+- Por qué: una contraseña temporal en el correo queda legible en el buzón y en cualquier reenvío. Un enlace de un solo uso con vencimiento reduce esa exposición, y la contraseña la elige solo el cliente.
+- Diseño:
+  - **cuentas nuevas:** se crean con una contraseña aleatoria de 32 bytes de la que solo se guarda el hash con sal; nadie la conoce. Quedan con `debe_cambiar_password = 1`. Ya no existe contraseña temporal en ningún lugar (se eliminó `generarContrasenaTemporal`);
+  - **token:** `crypto.randomBytes(32)` en base64url. La base guarda solo su hash SHA-256 en `tokens_cuenta`. Vence a las 48 horas (`ATLAS_ENLACE_VIGENCIA_HORAS`). Emitir uno nuevo **borra** los anteriores de esa cuenta;
+  - **enlace:** `APP_URL/#crear-contrasena=<token>`. El fragmento (#) no llega al servidor ni a los registros de acceso ni viaja en `Referer`. La app lo lee una sola vez al cargar (y en `hashchange`), lo quita de la barra con `history.replaceState` y muestra "Crea tu contraseña";
+  - **abrir o validar el enlace no lo consume:** solo lo consume el envío del formulario;
+  - **consumo atómico:** en una transacción `BEGIN IMMEDIATE`, un `UPDATE … WHERE usado_at IS NULL AND expira_at > ahora` marca el token; solo la petición que cambia exactamente una fila guarda la contraseña. Con dos envíos simultáneos, uno recibe 200 y el otro el error genérico;
+  - **al crear la contraseña:** hash con sal nueva, apaga `debe_cambiar_password`, cierra las sesiones abiertas de esa cuenta y **no** inicia sesión. La app vuelve al login con "Contraseña creada. Inicia sesión.";
+  - **errores:** token inexistente, con formato inválido, vencido o ya usado responden igual: "El enlace no es válido o venció. Pide a tu agente que lo reenvíe." Los errores de la contraseña (mínimo 8 caracteres, confirmación igual) salen por campo y no consumen el token;
+  - **límite:** 10 tokens no válidos por IP en 15 minutos, sumando las dos rutas (`ATLAS_ENLACE_MAX_IP`), con el limitador existente. El 429 dice "Demasiados intentos con enlaces no válidos desde esta conexión. Espera N minutos e inténtalo de nuevo." (`codigo: limite_enlace`) y se aplica igual exista o no el token, así que no revela nada. Los errores de contraseña con un token válido no cuentan.
+- Dónde está el token: solo en el correo y, en modo simulado, en el `.eml` de `data/correos/`, que es la única otra copia. Nunca se escribe en la consola del servidor, en `registro_notificaciones`, en `tokens_cuenta` (solo el hash), en respuestas de la API ni en mensajes de error:
+  - las dos rutas reciben el token en el cuerpo JSON, nunca en la URL;
+  - el manejador de errores registra solo el stack, y ninguna excepción incluye el cuerpo de la petición; un JSON mal formado responde 400 sin registrar nada;
+  - el servidor no tiene registro de peticiones (sin morgan ni similar).
+- Plantilla del correo: asunto "Crea tu contraseña del portal de ATLAS", botón "Crear mi contraseña", el enlace en texto plano, el correo de acceso, la vigencia de 48 horas, que funciona una sola vez y "Si no solicitaste este registro, ignora este correo". Sin contraseña. "Cotización lista" no cambia.
+- Compatibilidad: el personal y los clientes con `123` no cambian. La pantalla "Crea tu nueva contraseña" (cambio obligatorio con la contraseña actual) sigue funcionando para cuentas con la marca. Las cuentas creadas con la versión anterior de la 4a no se migran: su contraseña temporal sigue en su `.eml`.
+- Interfaz:
+  - `src/CrearContrasena.jsx` (nuevo): pantalla pública con validación del enlace, contraseña y confirmación con mostrar/ocultar (`CampoContrasena`, ahora exportado de `CambiarContrasena.jsx`), mensaje genérico si el enlace no sirve y "Ir al inicio de sesión";
+  - `src/enlaceAcceso.js` (nuevo): `tomarTokenDeEnlace`, que lee y borra el fragmento;
+  - `src/App.jsx`: lee el enlace al cargar el módulo, atiende `hashchange`, muestra la pantalla antes del login (si había una sesión abierta en esa pestaña, la cierra al salir) y el aviso del login. El modal "Solicitud registrada" dice "Se envió un enlace de acceso para que el cliente cree su contraseña" y, en modo simulado, el `.eml`;
+  - `src/AvisoCorreo.jsx`: "el correo con el enlace de acceso".
+- Archivos: `server/tokensCuenta.js`, `server/enlaces.test.js`, `src/CrearContrasena.jsx`, `src/enlaceAcceso.js`, `src/enlaceAcceso.test.js` (nuevos); `server/schema.sql`, `server/api.js`, `server/correo.js`, `server/correoUtil.js`, `server/plantillasCorreo.js`, `server/correo.test.js`, `server/plantillasCorreo.test.js`, `src/App.jsx`, `src/AvisoCorreo.jsx`, `src/CambiarContrasena.jsx`, `.env.example`.
+- Base de datos: tabla nueva `tokens_cuenta` (`cuenta_id` con llave foránea a `cuentas_cliente` y borrado en cascada, `tipo` = `crear_contrasena`, `token_hash` único, `expira_at`, `usado_at`, `created_at`) e índice `tokens_cuenta_idx`. Se crea con `CREATE TABLE IF NOT EXISTS`; `user_version` sigue en 3.
+- Rutas nuevas (públicas): `POST /api/portal/validar-enlace` y `POST /api/portal/crear-contrasena`.
+- Pruebas:
+  - `server/enlaces.test.js` (12): validar sin consumir (varias veces), inexistente o mal formado con el mismo error, crear y entrar sin sesión automática, un solo uso, vencido, vigencia de 48 horas, contraseña corta o distinta sin consumir, dos envíos simultáneos, emitir uno nuevo invalida el anterior, sesiones cerradas, límite por IP con el 429 sin revelar el token, y el token ausente de la consola, `registro_notificaciones`, `tokens_cuenta` y las respuestas de error. Emite tokens con el mismo módulo del servidor contra la base temporal, tras comprobar que no es `data/atlas.sqlite`;
+  - `server/correo.test.js` y `server/plantillasCorreo.test.js`: el correo lleva el enlace y la vigencia y no contiene contraseña; el token no está en la respuesta, la base ni la consola;
+  - `src/enlaceAcceso.test.js` (2): lectura y borrado del fragmento.
+- Cómo probar en la interfaz (sin `.env`, modo simulado):
+  1. Como `ventas@atlas.com`, registra una solicitud. El modal dice que se envió un enlace de acceso e indica el `.eml`.
+  2. Abre el `.eml` y copia el enlace "Crear mi contraseña". Ábrelo en el navegador de la misma máquina: la barra queda sin `#…` y aparece "Crea tu contraseña".
+  3. Prueba una contraseña corta y una confirmación distinta (errores junto al campo), luego crea una válida. Vuelves al login con "Contraseña creada. Inicia sesión." y entras directo al portal.
+  4. Abre otra vez el mismo enlace: "El enlace no es válido o venció. Pide a tu agente que lo reenvíe."
+
 ### Fase 4a: notificaciones por correo (plantillas y modo simulado)
 
-- Estado: **implementado. Sin commit.** Primera parte de la Fase 4. Quedan para la Fase 4b: reenviar credenciales, pantalla "Notificaciones" del administrador con reintento y correos en el detalle del agente.
+- Estado: **implementado.** Commit `7c059c7`. Primera parte de la Fase 4. El correo de credenciales con contraseña temporal descrito aquí se reemplazó por el enlace "Crea tu contraseña" (entrada anterior). Quedan para la Fase 4b: reenviar credenciales, pantalla "Notificaciones" del administrador con reintento y correos en el detalle del agente.
 - Por qué: diseño de la sección 3.2.3 del documento y tabla `registro_notificaciones`. Hasta ahora las cuentas de cliente nuevas se creaban con la contraseña `123` y no se enviaba ningún correo.
 - Dependencia nueva: `nodemailer@10.0.14`, versión exacta (sin `^` ni `~`), aprobada.
   - Revisión antes de instalar (2026-10-19): publicada el 2026-10-03 (16.5 días), sin dependencias propias, `npm audit` sin vulnerabilidades al auditarla sola y sin hallazgos nuevos al agregarla al proyecto.

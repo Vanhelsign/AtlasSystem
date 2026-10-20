@@ -1,5 +1,4 @@
 // Funciones puras del correo (sin base de datos ni red), separadas para poder probarlas solas.
-import { randomInt } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import process from 'node:process'
@@ -25,14 +24,6 @@ export function configuracionCorreo(entorno = process.env) {
     tiempoMaxMs: Number.isInteger(tiempo) && tiempo > 0 ? tiempo : TIEMPO_MAX_POR_DEFECTO_MS,
     carpetaCorreos: texto('ATLAS_CORREOS_DIR') ? resolve(texto('ATLAS_CORREOS_DIR')) : join(raizProyecto, 'data', 'correos'),
   }
-}
-
-// Sin caracteres que se confunden al leerlos (0/O, 1/l/I). 12 caracteres de 56 posibles ≈ 69 bits.
-export const ALFABETO_TEMPORAL = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
-export function generarContrasenaTemporal(longitud = 12) {
-  let resultado = ''
-  for (let i = 0; i < longitud; i += 1) resultado += ALFABETO_TEMPORAL[randomInt(ALFABETO_TEMPORAL.length)]
-  return resultado
 }
 
 // Mensaje de error apto para guardar y mostrar: sin credenciales y de longitud acotada.

@@ -2,19 +2,23 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { escaparHtml, plantillaCotizacionLista, plantillaCredenciales, plantillaRecordatorio } from './plantillasCorreo.js'
-import { ALFABETO_TEMPORAL, configuracionCorreo, generarContrasenaTemporal, limpiarDetalleError } from './correoUtil.js'
+import { configuracionCorreo, limpiarDetalleError } from './correoUtil.js'
 
 const URL_APP = 'http://atlas.example'
+const ENLACE = `${URL_APP}/#crear-contrasena=${'A'.repeat(43)}`
 
-test('credenciales: correo de acceso, contraseña temporal y URL en texto y HTML, en español', () => {
-  const correo = plantillaCredenciales({ nombre: 'Cliente Demo', email: 'cliente@ejemplo.com', contrasenaTemporal: 'Ab3dEf7hJk9m', urlApp: URL_APP })
-  assert.equal(correo.asunto, 'Tu acceso al portal de ATLAS')
+test('credenciales: enlace "Crear mi contraseña", enlace en texto plano y vigencia; sin contraseña', () => {
+  const correo = plantillaCredenciales({ nombre: 'Cliente Demo', email: 'cliente@ejemplo.com', enlace: ENLACE, horasVigencia: 48 })
+  assert.equal(correo.asunto, 'Crea tu contraseña del portal de ATLAS')
   for (const parte of [correo.texto, correo.html]) {
     assert.ok(parte.includes('cliente@ejemplo.com'))
-    assert.ok(parte.includes('Ab3dEf7hJk9m'))
-    assert.ok(parte.includes(URL_APP))
-    assert.match(parte, /cambiar la contraseña temporal/)
+    assert.ok(parte.includes(ENLACE))
+    assert.match(parte, /48 horas/)
+    assert.match(parte, /Si no solicitaste este registro, ignora este correo/)
+    assert.doesNotMatch(parte, /contraseña temporal|Contraseña:/i)
   }
+  assert.ok(correo.texto.includes(`\n${ENLACE}\n`), 'el enlace va en su propia línea del texto plano')
+  assert.match(correo.html, /<a href="http:\/\/atlas\.example\/#crear-contrasena=A{43}"[^>]*>Crear mi contraseña<\/a>/)
   assert.match(correo.texto, /^Hola, Cliente Demo:/)
   assert.match(correo.html, /<html lang="es">/)
 })
@@ -39,7 +43,7 @@ test('recordatorio: plantilla lista para cuando exista el módulo de mantenimien
 
 test('el HTML escapa los datos del cliente', () => {
   assert.equal(escaparHtml(`<b>"x" & 'y'</b>`), '&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;')
-  const correo = plantillaCredenciales({ nombre: '<script>alert(1)</script>', email: 'a@ejemplo.com', contrasenaTemporal: 'x', urlApp: URL_APP })
+  const correo = plantillaCredenciales({ nombre: '<script>alert(1)</script>', email: 'a@ejemplo.com', enlace: ENLACE, horasVigencia: 48 })
   assert.ok(!correo.html.includes('<script>'))
   assert.ok(correo.html.includes('&lt;script&gt;'))
 })
@@ -56,16 +60,6 @@ test('configuración: sin SMTP_HOST es modo simulado; valores por defecto y URL 
   assert.equal(real.puerto, 465)
   assert.equal(real.urlApp, 'https://atlas.ejemplo.com')
   assert.equal(real.tiempoMaxMs, 5000)
-})
-
-test('contraseña temporal: 12 caracteres del alfabeto sin ambiguos y distinta cada vez', () => {
-  const generadas = new Set(Array.from({ length: 200 }, () => generarContrasenaTemporal()))
-  assert.equal(generadas.size, 200)
-  for (const contrasena of generadas) {
-    assert.equal(contrasena.length, 12)
-    assert.ok([...contrasena].every((caracter) => ALFABETO_TEMPORAL.includes(caracter)))
-  }
-  assert.doesNotMatch(ALFABETO_TEMPORAL, /[0O1lI]/)
 })
 
 test('el detalle de error oculta usuario y contraseña SMTP y se acota', () => {

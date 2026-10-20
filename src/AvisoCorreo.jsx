@@ -1,7 +1,7 @@
 // Estado del correo que el servidor intentó enviar tras registrar una solicitud o aprobar una cotización.
-// Nunca muestra la contraseña temporal: en modo simulado solo indica el archivo .eml que la contiene.
+// Nunca muestra el enlace de acceso: en modo simulado solo indica el archivo .eml que lo contiene.
 const DESCRIPCION = {
-  credenciales: "el correo de acceso con la contraseña temporal",
+  credenciales: "el correo con el enlace de acceso",
   cotizacion_lista: "el aviso de cotización lista",
 };
 

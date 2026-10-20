@@ -17,7 +17,7 @@ function validar({ actual, nueva, confirmacion }) {
   return errores;
 }
 
-function CampoContrasena({ etiqueta, valor, onCambiar, error, autoComplete, ayuda }) {
+export function CampoContrasena({ etiqueta, valor, onCambiar, error, autoComplete, ayuda }) {
   const id = useId();
   const [visible, setVisible] = useState(false);
   return (
