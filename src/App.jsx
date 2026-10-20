@@ -9,6 +9,7 @@ import Cotizacion from "./Cotizacion.jsx";
 import SolicitudesDimensionamiento from "./SolicitudesDimensionamiento.jsx";
 import GestionInventario from "./InventarioFisico.jsx";
 import TarifasCfe from "./TarifasCfe.jsx";
+import Clientes from "./Clientes.jsx";
 import AhorroInversion from "./AhorroInversion.jsx";
 import EmisionAhorro, { ModalEmitirCotizacion } from "./EmisionAhorro.jsx";
 import Modal from "./Modal.jsx";
@@ -751,6 +752,8 @@ export default function App() {
   const [registroExitoso, setRegistroExitoso] = useState(null);
   const [avisoLogin, setAvisoLogin] = useState("");
   const [tokenEnlace, setTokenEnlace] = useState(tokenEnlaceInicial);
+  // Se incrementa cuando la pantalla Clientes cambia algo, para recargar las listas que dependen de prospectos.
+  const [versionLeads, setVersionLeads] = useState(0);
 
   const limpiarSesion = () => {
     setUsuarioActual(null);
@@ -795,7 +798,7 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [usuarioActual]);
+  }, [usuarioActual, versionLeads]);
 
   useEffect(() => {
     if (!usuarioActual || !["Administrador", "Agente", "Técnico"].includes(usuarioActual.rol)) return;
@@ -920,6 +923,7 @@ export default function App() {
       { key: "historial", label: "Cotizaciones Emitidas", icon: "📄" },
       { key: "inventario", label: "Inventario Físico", icon: "📦" },
       { key: "tarifas", label: "Tarifas y ahorro", icon: "⚡" },
+      { key: "clientes", label: "Clientes", icon: "🗂️" },
       { key: "usuarios", label: "Usuarios y personal", icon: "👥" },
     ];
     return [
@@ -1048,6 +1052,7 @@ export default function App() {
         {pagina === "ahorro_inversion" && <AhorroInversion datos={datosPortal} cargando={cargandoPortal} error={errorPortal} onVolver={() => setPagina("portal_cliente")} />}
         {pagina === "tarifas" && usuarioActual.rol === "Administrador" && <TarifasCfe token={usuarioActual.token} />}
         {pagina === "historial" && <ListaSolicitudes registros={leads} token={usuarioActual.token} usuario={usuarioActual} onActualizarRegistro={(registro) => setLeads((actuales) => actuales.map((item) => item.id === registro.id ? registro : item))} />}
+        {pagina === "clientes" && usuarioActual.rol === "Administrador" && <Clientes token={usuarioActual.token} onCambio={() => setVersionLeads((actual) => actual + 1)} />}
         {pagina === "usuarios" && usuarioActual.rol === "Administrador" && <UsuariosPersonal token={usuarioActual.token} />}
       </main>
     </div>

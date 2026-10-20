@@ -140,3 +140,28 @@ export async function registrarSolicitudPrueba(servidor, email, estado = 'Nuevo 
   }
   return respuesta.datos
 }
+
+// Lleva una solicitud de prueba (Nuevo León) por la revisión técnica: tomar, borrador y completar.
+export async function completarRevisionPrueba(servidor, solicitudId) {
+  // El técnico solo toma solicitudes de su estado de trabajo; las de prueba son de Nuevo León.
+  servidor.sql("UPDATE usuarios_personal SET estado_trabajo_codigo = 'MX-NLE' WHERE email = 'tecnico@atlas.com'")
+  const tecnico = (await servidor.iniciarSesion('tecnico@atlas.com')).datos.token
+  const productos = (await servidor.pedir('/productos', { token: tecnico })).datos
+  const panel = productos.find((producto) => producto.tipo === 'Panel' && producto.activo)
+  const inversor = productos.find((producto) => producto.tipo === 'Inversor' && producto.activo)
+  for (const [ruta, metodo, cuerpo] of [
+    ['tomar', 'POST', {}],
+    ['borrador', 'PUT', { items: [{ producto_id: panel.id, cantidad: 10 }, { producto_id: inversor.id, cantidad: 1 }] }],
+    ['completar', 'POST', {}],
+  ]) {
+    const respuesta = await servidor.pedir(`/tecnico/solicitudes/${solicitudId}/${ruta}`, { metodo, token: tecnico, cuerpo })
+    if (respuesta.estado >= 300) throw new Error(`${ruta}: ${respuesta.texto}`)
+  }
+}
+
+// Completa la revisión técnica y aprueba la cotización como el agente de prueba.
+export async function aprobarSolicitudPrueba(servidor, solicitudId) {
+  await completarRevisionPrueba(servidor, solicitudId)
+  const agente = (await servidor.iniciarSesion('ventas@atlas.com')).datos.token
+  return servidor.pedir(`/agente/solicitudes/${solicitudId}/aprobar`, { metodo: 'POST', token: agente, cuerpo: { precio_venta: 150000 } })
+}

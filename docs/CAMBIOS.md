@@ -57,6 +57,11 @@ Correo (Fase 4):
 - "Aceptado" significa que el servidor SMTP recibió el mensaje, no que llegó al buzón. `entregado` no se usa.
 - El correo de "cotización lista" va a la cuenta de cliente; si no existe, al correo del prospecto.
 
+Papelera de clientes:
+
+- Los registros en la papelera no vencen: se quedan ahí hasta que un administrador los restaure o los elimine definitivamente.
+- Motivo de eliminación opcional, de hasta 500 caracteres.
+
 Otros:
 
 - Inventario: el CSV conserva la columna `estado` del documento (Activo/Inactivo); la interfaz la muestra como "Estatus" y la importación acepta también `estatus`.
@@ -94,6 +99,16 @@ Funcionalidad:
 - `README.md` no se ha actualizado desde el commit inicial: no describe las integraciones 2 y 6 ni las fases recientes.
 - `server/index.js` solo importa `api.js` y conserva código antiguo comentado.
 - `npm audit` reporta 14 vulnerabilidades (11 altas, 2 moderadas, 1 baja), todas en herramientas de desarrollo: Vite 8.0.x, Tailwind 3, PostCSS, Babel y sus dependencias. `npm audit --omit=dev` da 0. Revisado de nuevo el 2026-10-19 al instalar `nodemailer`. Se atenderán después de la Fase 4 con `npm audit fix` sin `--force`; `braces` (vía Tailwind 3) solo se corrige pasando a `tailwindcss@4`, que no se hará.
+
+Papelera y eliminación definitiva:
+
+- Cada eliminación definitiva crea un respaldo completo de la base en `data/backups/`, que **conserva los datos del cliente eliminado** (nombre, correo, dirección, solicitudes). Los respaldos no se borran solos: hay que limpiarlos a mano cuando ya no se necesiten.
+- En Windows, si la ruta completa del respaldo supera unos 260 caracteres, `VACUUM INTO` falla ("unable to open database") y no se elimina nada. Con la ruta actual del proyecto (unos 160 caracteres) no ocurre.
+- Siguen existiendo otros borrados físicos aprobados antes, de otras entidades: proveedores, tarifas y el reemplazo de tokens al emitir uno nuevo. En clientes y estimaciones, el único DELETE es la eliminación definitiva.
+- Un cliente sin correo (como el prospecto de demostración) se confirma escribiendo su nombre.
+- El prospecto de demostración (`seedDemoData`) se vuelve a crear en cada arranque si no existe: si se elimina definitivamente, reaparece al reiniciar el servidor. Si solo está en la papelera, se queda ahí.
+- Solo se borran los `.eml` registrados en `registro_notificaciones.archivo`. Si alguien copió o movió un `.eml` fuera de `data/correos/`, esa copia queda.
+- La interfaz solo crea una solicitud por cliente; varias solicitudes por cliente (y por tanto "eliminar aparte" y luego restaurar al cliente) se probaron insertando la segunda en la base de prueba.
 
 Datos:
 
@@ -141,7 +156,15 @@ Respuestas comunes:
 | PUT | /api/tarifas-estados/:codigo | Administrador | Asigna tarifa a un estado |
 | PUT | /api/parametros-ahorro | Administrador | Edita parámetros de la estimación |
 | GET | /api/personal | Administrador | Lista personal |
-| POST | /api/personal | Administrador | Registra técnico o agente |
+| POST | /api/personal | Administrador | Registra técnico o agente. 409 `correo_en_papelera` si el correo es de un cliente en la papelera |
+| GET | /api/admin/clientes | Administrador | Lista de clientes `?estado=activos\|eliminados&q=` |
+| GET | /api/admin/clientes/:id | Administrador | Detalle (también de la papelera) con solicitudes y conteos de impacto |
+| POST | /api/admin/clientes/:id/eliminar | Administrador | Manda al cliente y sus solicitudes activas a la papelera (`{ motivo? }`); cierra sus sesiones y vence sus enlaces |
+| POST | /api/admin/clientes/:id/restaurar | Administrador | Restaura al cliente y las solicitudes de su lote |
+| POST | /api/admin/clientes/:id/eliminar-definitivamente | Administrador | `{ entiendo: true, confirmacion }`; solo desde la papelera (409 si no). Respaldo, borrado físico, notificaciones anonimizadas y `.eml` borrados |
+| POST | /api/admin/solicitudes/:id/eliminar | Administrador | Manda una estimación a la papelera (`{ motivo? }`) |
+| POST | /api/admin/solicitudes/:id/restaurar | Administrador | Restaura una estimación (409 si su cliente está en la papelera) |
+| POST | /api/admin/solicitudes/:id/eliminar-definitivamente | Administrador | `{ entiendo: true }`; solo desde la papelera. Respaldo y borrado físico de la estimación |
 | PATCH | /api/personal/:id/activo | Administrador | Activa o desactiva cuenta |
 | PATCH | /api/personal/:id/estado-trabajo | Administrador | Asigna estado de trabajo |
 | GET | /api/prospectos | Administrador, Agente (solo los suyos) | Lista prospectos y solicitudes |
@@ -180,7 +203,8 @@ Columnas agregadas sin cambiar `user_version` (idempotentes, en cada arranque):
 - Fase 2 del plan actual (`4ad4702`): `tarifas_bloques.origen_precio`, `tarifas_cfe.origen_cargo_fijo`.
 - Fase 3 del plan actual (`861e96c`): `cuentas_cliente.debe_cambiar_password`, `password_actualizada_at`.
 - Fase 4a (`7c059c7`): `registro_notificaciones.solicitud_id`, `intentos`, `ultimo_intento_at`, `archivo` e índice `notificaciones_solicitud_idx`.
-- Cambio de la Fase 4a (sin commit): tabla nueva `tokens_cuenta` (con `CREATE TABLE IF NOT EXISTS`, sin migración de columnas).
+- Cambio de la Fase 4a (`b09bf67`): tabla nueva `tokens_cuenta` (con `CREATE TABLE IF NOT EXISTS`, sin migración de columnas).
+- Papelera de clientes (sin commit): `prospectos` y `solicitudes_cotizacion` reciben `eliminado_at`, `eliminado_por`, `motivo_eliminacion` y `eliminacion_lote` (NULL por defecto), con índices `prospectos_eliminado_idx` y `solicitudes_eliminado_idx`.
 - Corrección de estados (`2dd526a`): no agrega columnas; en cada arranque completa `direcciones_cliente.estado_codigo` cuando el texto se reconoce y reporta las que no.
 
 Tablas y en qué commit aparecieron:
@@ -211,15 +235,57 @@ Tablas y en qué commit aparecieron:
 | tarifas_bloques | 6e5e658 | Bloques por temporada |
 | tarifas_estados | 6e5e658 | Tarifa sugerida por estado |
 | parametros_ahorro | 6e5e658 | Parámetros de la estimación |
-| tokens_cuenta | cambio de la Fase 4a (sin commit) | Hash de los tokens de un solo uso del enlace "Crea tu contraseña" |
+| tokens_cuenta | b09bf67 | Hash de los tokens de un solo uso del enlace "Crea tu contraseña" |
 
 ---
 
 ## Historial
 
+### Clientes y papelera: borrado lógico, restauración y eliminación definitiva
+
+- Estado: **implementado. Sin commit.**
+- Por qué: el administrador necesita gestionar clientes y estimaciones (por ejemplo, limpiar registros de prueba) sin perder información por error. Primero van a una papelera de la que se pueden restaurar; el borrado físico solo ocurre desde ahí y con confirmación explícita.
+- Pantalla "Clientes" (solo Administrador; menú con el ícono 🗂️, visible con el menú contraído):
+  - tabla con nombre, correo, estado geográfico, número de solicitudes, estatus de la solicitud más reciente y fecha de alta (o de eliminación y motivo en "Eliminados"), buscador por nombre o correo y selector "Activos / Eliminados";
+  - modal de detalle con datos, cuenta del portal, dirección y solicitudes con su estatus, cotización emitida y, si están en la papelera, cuándo y por qué;
+  - acciones: Eliminar cliente, Restaurar cliente, Eliminar estimación, Restaurar estimación y, en la papelera, Eliminar definitivamente;
+  - cada confirmación indica cuántas solicitudes y cotizaciones se afectan y acepta un motivo opcional (máximo 500 caracteres, recortado); con motivo escrito, cerrar sin confirmar pide "¿Descartar los cambios?";
+  - la eliminación definitiva muestra el conteo exacto por tipo de registro, avisa que se crea un respaldo con los datos del cliente y que los respaldos se limpian a mano, exige la casilla "Entiendo que no se puede deshacer" y, para clientes, escribir su correo (o su nombre si no tiene correo). El botón queda deshabilitado hasta cumplir ambas.
+- Borrado lógico:
+  - columnas `eliminado_at`, `eliminado_por`, `motivo_eliminacion` y `eliminacion_lote` en `prospectos` y `solicitudes_cotizacion`, todas NULL por defecto (no cambia datos existentes);
+  - eliminar un cliente marca al cliente y a sus solicitudes activas con un mismo lote (UUID), en una transacción; restaurarlo solo restaura las solicitudes de ese lote, así que una estimación eliminada aparte sigue en la papelera. Eliminar una estimación sola no toca al cliente. Una estimación cuyo cliente está en la papelera no se puede restaurar sola (409: "restaura primero al cliente");
+  - un cliente en la papelera no puede iniciar sesión (mismo 401 "Credenciales incorrectas"), se cierran sus sesiones y sus enlaces "Crea tu contraseña" pendientes vencen (UPDATE de `expira_at`, sin borrar); al restaurarlo, esos enlaces no reviven;
+  - su correo queda reservado: el agente recibe "Ya existe un cliente con ese correo electrónico" (el mismo mensaje que para un cliente activo) y el administrador, al dar de alta personal con ese correo, recibe la explicación de la papelera (`codigo: correo_en_papelera`);
+  - `registro_notificaciones`, las cotizaciones emitidas y sus copias no se modifican con el borrado lógico.
+- Consultas filtradas (excluyen la papelera; con el id de un registro eliminado responden 404):
+  - `prospectSelect` y `getProspecto` (`server/database.js`): excluyen clientes eliminados, y la subconsulta de la "solicitud más reciente" ignora las eliminadas. Cubren `GET /api/prospectos` (Cotizaciones Emitidas y dashboard, para agente y administrador), `GET /api/prospectos/:id` y las rutas antiguas `PATCH /api/prospectos/:id` y `PUT /api/prospectos/:id/consumo`;
+  - `getSolicitud`: `GET /api/solicitudes/:id`, el portal del cliente y las respuestas de aprobar y devolver;
+  - cola del técnico: `GET /api/tecnico/solicitudes`, `GET /api/tecnico/solicitudes/:id` (y por tanto borrador y completar) y la consulta propia de `POST …/tomar`;
+  - estimación previa: `GET /api/agente/solicitudes/:id/estimacion` y `construirEstimacion`;
+  - aprobar y devolver: sus consultas dentro de la transacción;
+  - `GET /api/portal/prospectos/:id` (vía `getProspecto`), el login del cliente, `buscarTokenVigente` (enlaces "Crea tu contraseña") y el destinatario del correo "cotización lista".
+  - No aplica: "Reactivación Comercial" usa datos de ejemplo en memoria del navegador, no la base. Las rutas de notificaciones por solicitud son de la Fase 4b y nacerán con el filtro.
+- Eliminación definitiva (único borrado físico de clientes y estimaciones):
+  - solo para registros que ya están en la papelera (409 si no);
+  - antes de borrar crea un respaldo con `VACUUM INTO` en `data/backups/` (fuera de la transacción, porque SQLite no lo permite dentro). Si el respaldo falla, no se borra nada;
+  - en una transacción `BEGIN IMMEDIATE` borra en este orden, porque hay llaves RESTRICT que la cascada no resuelve: `firmas_cotizacion` → `ordenes_instalacion` (con `checklist_evidencias` y `mantenimientos_programados` en cascada) → `cotizaciones_versiones` (con `cotizacion_version_items`; va antes de las revisiones por el RESTRICT de `revision_id`) → `revisiones_tecnicas` (con renglones y devoluciones) → `historial_cfe` → `electrodomesticos_solicitud` → `solicitudes_cotizacion`; para clientes, además `tokens_cuenta` → `cuentas_cliente` → `direcciones_cliente` → `consumos_prospecto` → `prospectos`;
+  - `registro_notificaciones` se conserva: `prospecto_id` y `solicitud_id` quedan en NULL. Al eliminar un cliente, además `destinatario_email` pasa a `eliminado-<id>@anonimo.invalid` y `detalle_error` se vacía; tipo, estado, fechas, intentos y nombre de archivo se conservan. Al eliminar solo una estimación, el cliente sigue existiendo y no se anonimiza;
+  - `PRAGMA foreign_key_check` antes del COMMIT; si encuentra filas o algo falla, ROLLBACK y el mensaje "Se deshizo todo y no se eliminó nada";
+  - después del COMMIT se borran los `.eml` del cliente usando `registro_notificaciones.archivo`, solo si la ruta resuelta queda dentro de `data/correos/` (cualquier nombre que se salga, por ejemplo con `..`, se rechaza). Un fallo al borrar un archivo no deshace la base: se informa en la respuesta y en un aviso;
+  - después, el correo queda libre para registrar otro cliente.
+- Rutas nuevas (solo Administrador; 400 id inválido, 404 inexistente, 409 estado incorrecto): `GET /api/admin/clientes`, `GET /api/admin/clientes/:id`, `POST /api/admin/clientes/:id/eliminar`, `…/restaurar`, `…/eliminar-definitivamente`, `POST /api/admin/solicitudes/:id/eliminar`, `…/restaurar`, `…/eliminar-definitivamente`.
+- Archivos: `server/papelera.js`, `server/papelera.test.js`, `src/Clientes.jsx` (nuevos); `server/api.js`, `server/database.js` (columnas, índices, filtro en `prospectSelect` y `respaldarBase` exportada), `server/correo.js` (`borrarArchivosCorreo`), `server/tokensCuenta.js`, `server/pruebas/servidorPrueba.js` (ayudantes de revisión y aprobación, movidos desde `correo.test.js`), `server/correo.test.js`, `src/App.jsx` (solo la entrada del menú, la sección y la recarga de prospectos al cambiar algo en Clientes).
+- Base de datos: 4 columnas en `prospectos` y 4 en `solicitudes_cotizacion`, e índices `prospectos_eliminado_idx` y `solicitudes_eliminado_idx`. Patrón idempotente de `ALTER TABLE`; `user_version` sigue en 3.
+- Pruebas (`server/papelera.test.js`, 12): solo Administrador (401/403), ids (400/404), eliminar y restaurar con conteos y 409, motivo de más de 500 caracteres, lote que no restaura lo eliminado aparte, login bloqueado con mensaje genérico, sesiones cerradas y enlaces invalidados, ocultamiento en cada pantalla y 404 en cada ruta filtrada, correo reservado y liberado tras la eliminación definitiva, 409 y confirmaciones de la eliminación definitiva, orden de borrado con firmas, órdenes, evidencias, mantenimientos y devoluciones insertados a mano, integridad (`foreign_key_check` vacío), respaldo creado, notificaciones conservadas y anonimizadas, `.eml` borrados (y uno con `../` rechazado), falla simulada a mitad que deshace todo, y eliminación definitiva de una sola estimación. La base, los correos y los respaldos viven en una carpeta temporal; la prueba compara antes y después la metadata de `data/backups/` y `data/correos/` reales.
+- Cómo probar en la interfaz (como `admin@atlas.com`):
+  1. Clientes → Ver detalle de un cliente → Eliminar cliente: revisa el conteo, escribe un motivo y prueba Escape (pide descartar); confirma. Desaparece de Activos y de Cotizaciones Emitidas, y ya no puede iniciar sesión.
+  2. En un cliente activo, Eliminar estimación y luego Restaurar estimación: el cliente no cambia.
+  3. Eliminados → Ver detalle → Restaurar cliente: vuelve con sus solicitudes.
+  4. Elimínalo otra vez y, en Eliminados → Ver detalle → Eliminar definitivamente: revisa el conteo, marca la casilla y escribe su correo. Desaparece de la papelera, se crea un respaldo en `data/backups/` y su correo queda libre.
+
 ### Fase 4a, cambio: enlace "Crea tu contraseña" en lugar de contraseña temporal
 
-- Estado: **implementado. Sin commit.** Cambia el correo de credenciales de la entrada siguiente (Fase 4a, commit `7c059c7`). La Fase 4b sigue pendiente.
+- Estado: **implementado.** Commit `b09bf67`. Cambia el correo de credenciales de la entrada siguiente (Fase 4a, commit `7c059c7`). La Fase 4b sigue pendiente.
 - Por qué: una contraseña temporal en el correo queda legible en el buzón y en cualquier reenvío. Un enlace de un solo uso con vencimiento reduce esa exposición, y la contraseña la elige solo el cliente.
 - Diseño:
   - **cuentas nuevas:** se crean con una contraseña aleatoria de 32 bytes de la que solo se guarda el hash con sal; nadie la conoce. Quedan con `debe_cambiar_password = 1`. Ya no existe contraseña temporal en ningún lugar (se eliminó `generarContrasenaTemporal`);

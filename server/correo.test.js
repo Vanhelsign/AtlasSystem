@@ -3,7 +3,7 @@
 import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:net'
-import { iniciarServidorPrueba, registrarSolicitudPrueba } from './pruebas/servidorPrueba.js'
+import { aprobarSolicitudPrueba as aprobarSolicitud, iniciarServidorPrueba, registrarSolicitudPrueba } from './pruebas/servidorPrueba.js'
 
 const tokenDelCorreo = (correo) => /#crear-contrasena=([A-Za-z0-9_-]{43})/.exec(correo.texto)?.[1]
 const notificaciones = (servidor) => servidor.sqlTodas('SELECT * FROM registro_notificaciones ORDER BY id')
@@ -44,26 +44,6 @@ async function smtpFalso(modo) {
   })
   await new Promise((resolver) => servidor.listen(0, '127.0.0.1', resolver))
   return { puerto: servidor.address().port, recibidos, cerrar: () => new Promise((resolver) => { servidor.close(resolver); servidor.closeAllConnections?.() }) }
-}
-
-async function aprobarSolicitud(servidor, solicitudId) {
-  // El técnico solo toma solicitudes de su estado de trabajo; la de prueba es de Nuevo León.
-  servidor.sql("UPDATE usuarios_personal SET estado_trabajo_codigo = 'MX-NLE' WHERE email = 'tecnico@atlas.com'")
-  const token = async (email) => (await servidor.iniciarSesion(email)).datos.token
-  const tecnico = await token('tecnico@atlas.com')
-  const agente = await token('ventas@atlas.com')
-  const productos = (await servidor.pedir('/productos', { token: tecnico })).datos
-  const panel = productos.find((producto) => producto.tipo === 'Panel' && producto.activo)
-  const inversor = productos.find((producto) => producto.tipo === 'Inversor' && producto.activo)
-  for (const [ruta, metodo, cuerpo] of [
-    ['tomar', 'POST', {}],
-    ['borrador', 'PUT', { items: [{ producto_id: panel.id, cantidad: 10 }, { producto_id: inversor.id, cantidad: 1 }] }],
-    ['completar', 'POST', {}],
-  ]) {
-    const respuesta = await servidor.pedir(`/tecnico/solicitudes/${solicitudId}/${ruta}`, { metodo, token: tecnico, cuerpo })
-    assert.ok(respuesta.estado < 300, `${ruta}: ${respuesta.texto}`)
-  }
-  return servidor.pedir(`/agente/solicitudes/${solicitudId}/aprobar`, { metodo: 'POST', token: agente, cuerpo: { precio_venta: 150000 } })
 }
 
 describe('modo simulado (sin SMTP)', () => {

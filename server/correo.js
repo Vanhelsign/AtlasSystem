@@ -7,8 +7,8 @@
 //
 // Reglas de seguridad: no se imprimen ni se guardan credenciales SMTP ni el enlace de acceso. El enlace (con su
 // token) solo viaja dentro del mensaje; en modo simulado, el .eml local es la única otra copia.
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import nodemailer from 'nodemailer'
 import { db } from './database.js'
 import { configuracionCorreo, limpiarDetalleError } from './correoUtil.js'
@@ -123,6 +123,29 @@ export function enviarCredenciales({ destinatario, nombre, token, horasVigencia,
 
 export function enviarCotizacionLista({ destinatario, nombre, prospectoId, solicitudId }) {
   return enviarCorreo({ tipo: 'cotizacion_lista', destinatario, nombre, prospectoId, solicitudId })
+}
+
+// Borra los .eml indicados, solo si su ruta resuelta queda dentro de la carpeta de correos (data/correos/).
+// Cualquier nombre que se salga de la carpeta (por ejemplo con "..") se rechaza. Nunca lanza: informa cada caso.
+export function borrarArchivosCorreo(archivos) {
+  const carpeta = resolve(config.carpetaCorreos)
+  const resultado = { borrados: 0, no_encontrados: 0, rechazados: 0, fallidos: [] }
+  for (const archivo of archivos) {
+    const ruta = resolve(carpeta, String(archivo))
+    const relativa = relative(carpeta, ruta)
+    if (!relativa || relativa.startsWith('..') || isAbsolute(relativa) || dirname(ruta) !== carpeta || !ruta.endsWith('.eml')) {
+      resultado.rechazados += 1
+      continue
+    }
+    try {
+      rmSync(ruta)
+      resultado.borrados += 1
+    } catch (error) {
+      if (error.code === 'ENOENT') resultado.no_encontrados += 1
+      else resultado.fallidos.push(`${basename(ruta)}: ${error.code ?? 'error'}`)
+    }
+  }
+  return resultado
 }
 
 // Sin disparador todavía: se llamará desde el módulo de mantenimientos programados cuando exista.

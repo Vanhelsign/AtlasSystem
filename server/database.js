@@ -122,6 +122,19 @@ for (const [tabla, columnas] of [
     ['ultimo_intento_at', 'TEXT'],
     ['archivo', 'TEXT'],
   ]],
+  // Papelera de clientes y estimaciones (borrado lógico). Todo NULL por defecto: no cambia datos existentes.
+  ['prospectos', [
+    ['eliminado_at', 'TEXT'],
+    ['eliminado_por', 'INTEGER'],
+    ['motivo_eliminacion', 'TEXT'],
+    ['eliminacion_lote', 'TEXT'],
+  ]],
+  ['solicitudes_cotizacion', [
+    ['eliminado_at', 'TEXT'],
+    ['eliminado_por', 'INTEGER'],
+    ['motivo_eliminacion', 'TEXT'],
+    ['eliminacion_lote', 'TEXT'],
+  ]],
 ]) {
   const existentes = db.prepare(`PRAGMA table_info(${tabla})`).all()
   for (const [nombre, tipo] of columnas) {
@@ -132,8 +145,11 @@ for (const [tabla, columnas] of [
 }
 // Va después de las columnas: en una base anterior a la Fase 4, solicitud_id no existe hasta el ALTER.
 db.exec('CREATE INDEX IF NOT EXISTS notificaciones_solicitud_idx ON registro_notificaciones(solicitud_id, created_at);')
+db.exec('CREATE INDEX IF NOT EXISTS prospectos_eliminado_idx ON prospectos(eliminado_at);')
+db.exec('CREATE INDEX IF NOT EXISTS solicitudes_eliminado_idx ON solicitudes_cotizacion(prospecto_id, eliminado_at);')
 
-function respaldarBase(etiqueta) {
+// Copia en <carpeta de la base>/backups/ (data/backups/ en uso normal; la carpeta temporal en las pruebas).
+export function respaldarBase(etiqueta) {
   const directorio = join(dirname(databasePath), 'backups')
   mkdirSync(directorio, { recursive: true })
   const fecha = new Date().toISOString().replace(/[:.]/g, '-')
@@ -141,6 +157,7 @@ function respaldarBase(etiqueta) {
   // VACUUM INTO genera una copia consistente que incluye lo pendiente en el WAL.
   db.exec(`VACUUM INTO '${destino.replaceAll("'", "''")}';`)
   console.log(`Respaldo de la base creado en ${destino}`)
+  return destino
 }
 
 // Procedimiento de reconstrucción recomendado por SQLite: las llaves foráneas se desactivan fuera de la
@@ -372,7 +389,7 @@ export const prospectSelect = `
   LEFT JOIN solicitudes_cotizacion s ON s.id = (
     SELECT id
     FROM solicitudes_cotizacion
-    WHERE prospecto_id = p.id
+    WHERE prospecto_id = p.id AND eliminado_at IS NULL
     ORDER BY id DESC
     LIMIT 1
   )
@@ -383,10 +400,12 @@ export const prospectSelect = `
     SELECT id FROM cotizaciones_versiones
     WHERE solicitud_id = s.id ORDER BY version DESC LIMIT 1
   )
+  WHERE p.eliminado_at IS NULL
 `
+// prospectSelect ya excluye clientes y solicitudes en la papelera; quien agregue condiciones debe usar AND.
 
 export function getProspecto(id) {
-  return db.prepare(`${prospectSelect} WHERE p.id = ?`).get(id)
+  return db.prepare(`${prospectSelect} AND p.id = ?`).get(id)
 }
 
 export function seedDemoData() {

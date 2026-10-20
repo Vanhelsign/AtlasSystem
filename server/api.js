@@ -2,13 +2,18 @@
 import './entorno.js'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { Buffer } from 'node:buffer'
+import { basename } from 'node:path'
 import process from 'node:process'
 import express from 'express'
 import { db, getProspecto, prospectSelect } from './database.js'
 import { ESTADOS_MEXICO, nombreEstadoMexico, normalizarEstadoMexico } from '../shared/estadosMexico.js'
 import { estimarAhorro, faltantesDeTarifa, kwpDePaneles, PARAMETROS_POR_DEFECTO, validarBloques } from '../shared/ahorroSolar.js'
 import { horasSolaresPico } from '../shared/irradiacion.js'
-import { describirModoCorreo, enviarCotizacionLista, enviarCredenciales } from './correo.js'
+import { borrarArchivosCorreo, describirModoCorreo, enviarCotizacionLista, enviarCredenciales } from './correo.js'
+import {
+  detalleCliente, eliminarCliente, eliminarDefinitivamente, eliminarSolicitud, ErrorPapelera, listarClientes,
+  restaurarCliente, restaurarSolicitud, validarMotivo,
+} from './papelera.js'
 import { buscarTokenVigente, consumirToken, emitirTokenCuenta, HORAS_VIGENCIA_ENLACE } from './tokensCuenta.js'
 
 const app = express()
@@ -403,8 +408,14 @@ function validarConfiguracion(configuracion, modalidad, consumoDiario, consumoNo
   }
 }
 
+// Condición de "no está en la papelera" para consultas que unen solicitudes (s) con su cliente (p).
+const ACTIVA = 's.eliminado_at IS NULL AND p.eliminado_at IS NULL'
+
 function getSolicitud(id) {
-  const solicitud = db.prepare('SELECT * FROM solicitudes_cotizacion WHERE id = ?').get(id)
+  const solicitud = db.prepare(`
+    SELECT s.* FROM solicitudes_cotizacion s JOIN prospectos p ON p.id = s.prospecto_id
+    WHERE s.id = ? AND ${ACTIVA}
+  `).get(id)
   if (!solicitud) return null
   const revisionTecnica = db.prepare(`
     SELECT rt.*, u.nombre AS tecnico_nombre
@@ -516,7 +527,7 @@ const solicitudTecnicaSelect = `
 
 function getSolicitudTecnica(id, tecnico) {
   const solicitud = db.prepare(`${solicitudTecnicaSelect}
-    WHERE s.id = ? AND d.estado_codigo = ?
+    WHERE s.id = ? AND d.estado_codigo = ? AND ${ACTIVA}
       AND (s.estado_flujo = 'pendiente_revision_tecnica'
            OR (s.estado_flujo = 'en_preparacion' AND rt.id IS NOT NULL))
   `).get(id, tecnico.estado_trabajo_codigo)
@@ -585,8 +596,9 @@ app.post('/api/login', (request, response) => {
              p.id AS prospecto_id, p.nombre
       FROM cuentas_cliente c
       JOIN prospectos p ON p.id = c.prospecto_id
-      WHERE c.email = ? COLLATE NOCASE
+      WHERE c.email = ? COLLATE NOCASE AND p.eliminado_at IS NULL
     `).get(email)
+    // Un cliente en la papelera recibe el mismo 401 que una contraseña incorrecta.
     if (!cuenta || !passwordCoincide(password, cuenta.password_hash, cuenta.password_salt)) return credencialesIncorrectas()
     limiteLoginCuenta.reiniciar(email)
     const sesion = {
@@ -1333,10 +1345,12 @@ function construirEstimacion(solicitudId, tarifaIdSolicitada, precioVenta) {
   const solicitud = db.prepare(`
     SELECT s.id, s.consumo_mensual_kwh, s.consumo_objetivo_kwh, d.estado_codigo, rt.id AS revision_id
     FROM solicitudes_cotizacion s
+    JOIN prospectos p ON p.id = s.prospecto_id
     LEFT JOIN direcciones_cliente d ON d.prospecto_id = s.prospecto_id
     LEFT JOIN revisiones_tecnicas rt ON rt.solicitud_id = s.id
-    WHERE s.id = ?
+    WHERE s.id = ? AND ${ACTIVA}
   `).get(solicitudId)
+  if (!solicitud) throw Object.assign(new Error('Solicitud no encontrada'), { status: 404 })
   const tarifaSugeridaId = solicitud.estado_codigo
     ? db.prepare('SELECT tarifa_id FROM tarifas_estados WHERE estado_codigo = ?').get(solicitud.estado_codigo)?.tarifa_id ?? null
     : null
@@ -1392,7 +1406,10 @@ function construirEstimacion(solicitudId, tarifaIdSolicitada, precioVenta) {
 app.get('/api/agente/solicitudes/:id/estimacion', autenticar, permitirRoles('Agente'), (request, response) => {
   const id = idValido(request.params.id)
   if (!id) return response.status(400).json({ error: 'Identificador inválido' })
-  const solicitud = db.prepare('SELECT agente_responsable_id FROM solicitudes_cotizacion WHERE id = ?').get(id)
+  const solicitud = db.prepare(`
+    SELECT s.agente_responsable_id FROM solicitudes_cotizacion s JOIN prospectos p ON p.id = s.prospecto_id
+    WHERE s.id = ? AND ${ACTIVA}
+  `).get(id)
   if (!solicitud || solicitud.agente_responsable_id !== request.usuario.usuario_id) return response.status(404).json({ error: 'Solicitud no encontrada' })
   const precioVenta = Number(request.query.precio_venta)
   if (!Number.isFinite(precioVenta) || precioVenta <= 0) return response.status(400).json({ error: 'Ingresa un precio de venta mayor que cero para estimar el ahorro' })
@@ -1409,7 +1426,7 @@ app.get('/api/tecnico/solicitudes', autenticar, permitirRoles('Técnico'), (requ
   const tecnico = getTecnicoAutorizado(request)
   if (!tecnico) return response.status(403).json({ error: 'El técnico debe estar activo y tener un estado de trabajo válido' })
   const solicitudes = db.prepare(`${solicitudTecnicaSelect}
-    WHERE d.estado_codigo = ?
+    WHERE d.estado_codigo = ? AND ${ACTIVA}
       AND (s.estado_flujo = 'pendiente_revision_tecnica'
            OR (s.estado_flujo = 'en_preparacion' AND rt.id IS NOT NULL))
     ORDER BY CASE WHEN rt.id IS NULL THEN 0 ELSE 1 END, s.created_at DESC
@@ -1438,9 +1455,10 @@ app.post('/api/tecnico/solicitudes/:id/tomar', autenticar, permitirRoles('Técni
       const elegible = db.prepare(`
         SELECT s.id
         FROM solicitudes_cotizacion s
+        JOIN prospectos p ON p.id = s.prospecto_id
         JOIN direcciones_cliente d ON d.prospecto_id = s.prospecto_id
         WHERE s.id = ? AND s.estado_flujo = 'pendiente_revision_tecnica'
-          AND d.estado_codigo = ?
+          AND d.estado_codigo = ? AND ${ACTIVA}
       `).get(id, tecnico.estado_trabajo_codigo)
       if (!elegible) throw new Error('Solicitud no disponible para tu estado de trabajo')
       const resultado = db.prepare(`
@@ -1585,6 +1603,10 @@ app.post('/api/personal', autenticar, permitirRoles('Administrador'), (request, 
       SELECT email FROM prospectos WHERE email = ? COLLATE NOCASE
       LIMIT 1
     `).get(email, email, email)
+    // Al administrador se le explica cuando el correo pertenece a un cliente en la papelera.
+    if (db.prepare('SELECT 1 FROM prospectos WHERE email = ? COLLATE NOCASE AND eliminado_at IS NOT NULL').get(email)) {
+      return response.status(409).json({ error: 'Ese correo pertenece a un cliente que está en la papelera. Restáuralo o elimínalo definitivamente en Clientes para usar el correo.', codigo: 'correo_en_papelera' })
+    }
     if (correoOcupado) return response.status(409).json({ error: 'El correo electrónico ya está registrado' })
 
     const credencial = hashPassword('123')
@@ -1650,7 +1672,8 @@ app.patch('/api/personal/:id/estado-trabajo', autenticar, permitirRoles('Adminis
 })
 
 app.get('/api/prospectos', autenticar, permitirRoles('Administrador', 'Agente'), (request, response) => {
-  const filtro = request.usuario.rol === 'Agente' ? ' WHERE s.agente_responsable_id = ?' : ''
+  // prospectSelect ya excluye la papelera y termina en WHERE: el filtro del agente se agrega con AND.
+  const filtro = request.usuario.rol === 'Agente' ? ' AND s.agente_responsable_id = ?' : ''
   const parametros = request.usuario.rol === 'Agente' ? [request.usuario.usuario_id] : []
   response.json(db.prepare(`${prospectSelect}${filtro} ORDER BY p.id DESC`).all(...parametros))
 })
@@ -1722,8 +1745,9 @@ app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agent
       const solicitud = db.prepare(`
         SELECT s.*, rt.id AS revision_id, rt.estado AS revision_estado
         FROM solicitudes_cotizacion s
+        JOIN prospectos p ON p.id = s.prospecto_id
         LEFT JOIN revisiones_tecnicas rt ON rt.solicitud_id = s.id
-        WHERE s.id = ?
+        WHERE s.id = ? AND ${ACTIVA}
       `).get(id)
       if (!solicitud) throw Object.assign(new Error('Solicitud no encontrada'), { status: 404 })
       if (solicitud.agente_responsable_id !== request.usuario.usuario_id) throw Object.assign(new Error('Solo el agente responsable puede aprobar esta solicitud'), { status: 403 })
@@ -1777,7 +1801,7 @@ app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agent
   const destino = db.prepare(`
     SELECT p.nombre, COALESCE(c.email, p.email) AS email
     FROM prospectos p LEFT JOIN cuentas_cliente c ON c.prospecto_id = p.id
-    WHERE p.id = ?
+    WHERE p.id = ? AND p.eliminado_at IS NULL
   `).get(prospectoId)
   const correo = destino?.email
     ? await enviarCotizacionLista({ destinatario: destino.email, nombre: destino.nombre, prospectoId, solicitudId: id })
@@ -1802,8 +1826,9 @@ app.post('/api/agente/solicitudes/:id/devolver', autenticar, permitirRoles('Agen
         SELECT s.*, rt.id AS revision_id, rt.estado AS revision_estado,
                rt.completada_at AS revision_completada_at
         FROM solicitudes_cotizacion s
+        JOIN prospectos p ON p.id = s.prospecto_id
         LEFT JOIN revisiones_tecnicas rt ON rt.solicitud_id = s.id
-        WHERE s.id = ?
+        WHERE s.id = ? AND ${ACTIVA}
       `).get(id)
       if (!solicitud) throw Object.assign(new Error('Solicitud no encontrada'), { status: 404 })
       if (solicitud.agente_responsable_id !== request.usuario.usuario_id) throw Object.assign(new Error('Solo el agente responsable puede devolver esta solicitud'), { status: 403 })
@@ -1864,8 +1889,9 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), async (request
     const consumoIntroducido = modalidad === 'historial_cfe' ? calculo.consumoIntroducido : null
     const consumoObjetivo = Math.round(consumoMensual * (1 + configuracion.margenCrecimiento / 100) * 1_000_000) / 1_000_000
 
+    // Incluye clientes en la papelera (su correo queda reservado). El agente recibe el mismo mensaje en ambos casos.
     if (db.prepare('SELECT 1 FROM prospectos WHERE email = ? COLLATE NOCASE').get(email)) {
-      return response.status(409).json({ error: 'Ya existe un registro con ese correo electrónico' })
+      return response.status(409).json({ error: 'Ya existe un cliente con ese correo electrónico' })
     }
     if (db.prepare('SELECT 1 FROM usuarios_personal WHERE email = ? COLLATE NOCASE').get(email)) {
       return response.status(409).json({ error: 'El correo electrónico ya está registrado como cuenta de personal' })
@@ -1979,6 +2005,73 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), async (request
   const correo = await enviarCredenciales({ destinatario: email, nombre, token: tokenEnlace, horasVigencia: HORAS_VIGENCIA_ENLACE, prospectoId, solicitudId })
   response.status(201).json({ registro: getProspecto(prospectoId), solicitud: getSolicitud(solicitudId), correo })
 })
+
+// ─── Clientes y papelera (solo Administrador) ───────────────────
+// Borrado lógico con lote, restauración y eliminación definitiva (único borrado físico de clientes y
+// estimaciones). La lógica de base de datos está en server/papelera.js.
+const responderPapelera = (response, error) => {
+  if (error instanceof ErrorPapelera) return response.status(error.status).json({ error: error.message })
+  throw error
+}
+const conId = (manejador) => (request, response) => {
+  const id = idValido(request.params.id)
+  if (!id) return response.status(400).json({ error: 'Identificador inválido' })
+  try {
+    return manejador(id, request, response)
+  } catch (error) {
+    return responderPapelera(response, error)
+  }
+}
+const soloAdministrador = [autenticar, permitirRoles('Administrador')]
+
+app.get('/api/admin/clientes', ...soloAdministrador, (request, response) => {
+  const estado = request.query.estado ?? 'activos'
+  if (!['activos', 'eliminados'].includes(estado)) return response.status(400).json({ error: 'Filtro no válido' })
+  const busqueda = typeof request.query.q === 'string' ? request.query.q.slice(0, 200) : ''
+  response.json(listarClientes({ eliminados: estado === 'eliminados', busqueda }))
+})
+
+app.get('/api/admin/clientes/:id', ...soloAdministrador, conId((id, _request, response) => response.json(detalleCliente(id))))
+
+app.post('/api/admin/clientes/:id/eliminar', ...soloAdministrador, conId((id, request, response) => {
+  const resultado = eliminarCliente(id, request.usuario.usuario_id, validarMotivo(request.body?.motivo))
+  // Un cliente en la papelera no puede seguir usando sesiones abiertas.
+  for (const [token, sesion] of [...sesiones]) {
+    if (sesion.rol === 'Cliente' && resultado.cuentas.includes(sesion.cuenta_id)) sesiones.delete(token)
+  }
+  response.json({ eliminado: true, solicitudes: resultado.solicitudes, cotizaciones: resultado.cotizaciones })
+}))
+
+app.post('/api/admin/clientes/:id/restaurar', ...soloAdministrador, conId((id, _request, response) => {
+  response.json({ restaurado: true, ...restaurarCliente(id) })
+}))
+
+app.post('/api/admin/solicitudes/:id/eliminar', ...soloAdministrador, conId((id, request, response) => {
+  response.json({ eliminado: true, ...eliminarSolicitud(id, request.usuario.usuario_id, validarMotivo(request.body?.motivo)) })
+}))
+
+app.post('/api/admin/solicitudes/:id/restaurar', ...soloAdministrador, conId((id, _request, response) => {
+  response.json({ restaurado: true, ...restaurarSolicitud(id) })
+}))
+
+// Eliminación definitiva: exige la casilla "Entiendo que no se puede deshacer" y, para clientes, su correo.
+const exigirEntiendo = (request) => {
+  if (request.body?.entiendo !== true) throw new ErrorPapelera(400, 'Marca la casilla "Entiendo que no se puede deshacer"')
+}
+
+app.post('/api/admin/clientes/:id/eliminar-definitivamente', ...soloAdministrador, conId((id, request, response) => {
+  exigirEntiendo(request)
+  const { conteo, archivos, respaldo } = eliminarDefinitivamente({ prospectoId: id, confirmacion: request.body?.confirmacion })
+  // Los .eml se borran después del COMMIT; un fallo aquí no deshace la base y se informa.
+  const correos = borrarArchivosCorreo(archivos)
+  response.json({ eliminado: true, conteo, respaldo: basename(respaldo), correos })
+}))
+
+app.post('/api/admin/solicitudes/:id/eliminar-definitivamente', ...soloAdministrador, conId((id, request, response) => {
+  exigirEntiendo(request)
+  const { conteo, respaldo } = eliminarDefinitivamente({ solicitudId: id })
+  response.json({ eliminado: true, conteo, respaldo: basename(respaldo) })
+}))
 
 // Rutas antiguas de prospectos: desde la corrección de seguridad exigen sesión de Administrador o Agente.
 app.post('/api/prospectos', autenticar, permitirRoles('Administrador', 'Agente'), (request, response) => {

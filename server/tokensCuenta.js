@@ -25,12 +25,15 @@ export function emitirTokenCuenta(cuentaId, tipo = 'crear_contrasena') {
   return token
 }
 
-// Token existente, sin usar y sin vencer. No lo consume.
+// Token existente, sin usar, sin vencer y de un cliente que no está en la papelera. No lo consume.
 export function buscarTokenVigente(token, tipo = 'crear_contrasena') {
   if (!formatoTokenValido(token)) return null
   return db.prepare(`
-    SELECT id, cuenta_id FROM tokens_cuenta
-    WHERE token_hash = ? AND tipo = ? AND usado_at IS NULL AND expira_at > datetime('now')
+    SELECT t.id, t.cuenta_id FROM tokens_cuenta t
+    JOIN cuentas_cliente c ON c.id = t.cuenta_id
+    JOIN prospectos p ON p.id = c.prospecto_id
+    WHERE t.token_hash = ? AND t.tipo = ? AND t.usado_at IS NULL AND t.expira_at > datetime('now')
+      AND p.eliminado_at IS NULL
   `).get(hashToken(token), tipo) ?? null
 }
 
