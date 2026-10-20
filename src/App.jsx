@@ -10,6 +10,8 @@ import SolicitudesDimensionamiento from "./SolicitudesDimensionamiento.jsx";
 import GestionInventario from "./InventarioFisico.jsx";
 import TarifasCfe from "./TarifasCfe.jsx";
 import Clientes from "./Clientes.jsx";
+import Notificaciones from "./Notificaciones.jsx";
+import CorreosSolicitud from "./CorreosSolicitud.jsx";
 import AhorroInversion from "./AhorroInversion.jsx";
 import EmisionAhorro, { ModalEmitirCotizacion } from "./EmisionAhorro.jsx";
 import Modal from "./Modal.jsx";
@@ -457,6 +459,8 @@ function ListaSolicitudes({ registros, token, usuario, onActualizarRegistro }) {
             <div><dt className="text-slate-500">Agente responsable</dt><dd className="font-semibold">{registroDetalle.agente_responsable || "No registrado"}</dd></div>
             <div><dt className="text-slate-500">Baterías</dt><dd className="font-semibold">{registroDetalle.cubrir_baterias === 1 ? "Sí" : registroDetalle.cubrir_baterias === 0 ? "No" : "No registrado"}</dd></div>
           </dl>
+          {/* Correos al cliente y reenvío del enlace: agente responsable (la lista ya es solo suya) y administrador. La clave recarga el bloque tras aprobar. */}
+          {registroDetalle.solicitud_id && ["Agente", "Administrador"].includes(usuario.rol) && <CorreosSolicitud key={`${registroDetalle.solicitud_id}-${registroDetalle.estado_flujo}`} token={token} solicitudId={registroDetalle.solicitud_id} />}
           {solicitudDetalle?.electrodomesticos?.length > 0 && <div className="mt-5"><h3 className="font-semibold">Electrodomésticos</h3><ul className="mt-2 space-y-1 text-sm text-slate-600">{solicitudDetalle.electrodomesticos.map((equipo) => <li key={equipo.id}>{equipo.cantidad} × {equipo.tipo}: {mostrarNumero(equipo.consumo_total_kwh, " kWh/día")}</li>)}</ul></div>}
           {solicitudDetalle?.revision_tecnica?.items?.length > 0 && <section className="mt-6 space-y-3 border-t pt-5"><div><h3 className="font-semibold">Componentes propuestos por el técnico</h3><p className="text-xs text-slate-500">Costos internos; todavía no son el precio de venta.</p></div><div className="overflow-x-auto"><table className="min-w-[600px] w-full text-sm"><thead className="bg-slate-50"><tr><th className="p-2 text-left">Modelo</th><th className="p-2">Cantidad</th><th className="p-2">Costo unitario</th><th className="p-2">Subtotal</th></tr></thead><tbody>{solicitudDetalle.revision_tecnica.items.map((item) => <tr key={item.id} className="border-t"><td className="p-2"><b>{item.tipo_aplicado}</b><br/><span className="text-slate-500">{item.modelo_aplicado}</span></td><td className="p-2 text-center">{item.cantidad}</td><td className="p-2 text-right">{fmt(item.costo_unitario_aplicado)}</td><td className="p-2 text-right font-semibold">{fmt(item.subtotal)}</td></tr>)}</tbody></table></div><p className="text-right font-bold">Costo total interno: {fmt(costoInterno)}</p></section>}
           {solicitudDetalle?.revision_tecnica?.devoluciones?.length > 0 && <section className="mt-5 rounded-lg bg-amber-50 p-4"><h3 className="text-sm font-bold text-amber-900">Historial de devoluciones</h3><ul className="mt-2 space-y-2 text-sm text-amber-900">{solicitudDetalle.revision_tecnica.devoluciones.map((devolucion) => <li key={devolucion.id}><b>{devolucion.agente_nombre}:</b> {devolucion.motivo}<span className="block text-xs text-amber-700">Devuelta: {fechaSolicitud(devolucion.devuelta_at)} · {devolucion.atendida_at ? `Atendida: ${fechaSolicitud(devolucion.atendida_at)}` : "Pendiente de corrección"}</span></li>)}</ul></section>}
@@ -924,6 +928,7 @@ export default function App() {
       { key: "inventario", label: "Inventario Físico", icon: "📦" },
       { key: "tarifas", label: "Tarifas y ahorro", icon: "⚡" },
       { key: "clientes", label: "Clientes", icon: "🗂️" },
+      { key: "notificaciones", label: "Notificaciones", icon: "✉️" },
       { key: "usuarios", label: "Usuarios y personal", icon: "👥" },
     ];
     return [
@@ -1052,7 +1057,8 @@ export default function App() {
         {pagina === "ahorro_inversion" && <AhorroInversion datos={datosPortal} cargando={cargandoPortal} error={errorPortal} onVolver={() => setPagina("portal_cliente")} />}
         {pagina === "tarifas" && usuarioActual.rol === "Administrador" && <TarifasCfe token={usuarioActual.token} />}
         {pagina === "historial" && <ListaSolicitudes registros={leads} token={usuarioActual.token} usuario={usuarioActual} onActualizarRegistro={(registro) => setLeads((actuales) => actuales.map((item) => item.id === registro.id ? registro : item))} />}
-        {pagina === "clientes" && usuarioActual.rol === "Administrador" && <Clientes token={usuarioActual.token} onCambio={() => setVersionLeads((actual) => actual + 1)} />}
+        {pagina === "notificaciones" && usuarioActual.rol === "Administrador" && <Notificaciones token={usuarioActual.token} />}
+        {pagina === "clientes" && usuarioActual.rol === "Administrador" &&<Clientes token={usuarioActual.token} onCambio={() => setVersionLeads((actual) => actual + 1)} />}
         {pagina === "usuarios" && usuarioActual.rol === "Administrador" && <UsuariosPersonal token={usuarioActual.token} />}
       </main>
     </div>

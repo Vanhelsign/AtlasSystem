@@ -56,6 +56,7 @@ Correo (Fase 4):
 - Remitente por defecto `ATLAS CRM <no-responder@atlas.example>` y `APP_URL` por defecto `http://localhost:5173`, mientras no se configuren en `.env`.
 - "Aceptado" significa que el servidor SMTP recibió el mensaje, no que llegó al buzón. `entregado` no se usa.
 - El correo de "cotización lista" va a la cuenta de cliente; si no existe, al correo del prospecto.
+- Reenvíos y reintentos: 3 por hora por cuenta de cliente, sumando ambos (`ATLAS_REENVIO_MAX_HORA`). Valor inicial.
 
 Papelera de clientes:
 
@@ -82,16 +83,19 @@ Seguridad y sesiones:
 - El indicador "debe cambiar contraseña" se lee al iniciar sesión: una sesión abierta antes de activarlo no se bloquea.
 - El personal de demostración y las cuentas de cliente creadas antes de la Fase 4 usan la contraseña `123`, sin cambio obligatorio (decisión explícita). Las cuentas de cliente nuevas reciben un enlace para crear su contraseña.
 - El enlace del correo apunta a `APP_URL`. Con el valor por defecto (`http://localhost:5173`) solo funciona en la máquina que corre la app; para que un cliente lo abra desde otro equipo, `APP_URL` debe ser una dirección pública o de la red local.
-- Hasta la Fase 4b no hay reenvío: si el enlace vence (48 horas) o el correo de una cuenta nueva falla, el cliente queda sin acceso hasta que exista el reenvío (o se corrija a mano en la base).
+- Si el enlace vence (48 horas) o el correo de una cuenta nueva falla, el cliente queda sin acceso hasta que el agente responsable o el administrador reenvíen el enlace (Fase 4b).
 - En modo simulado, cada `.eml` de credenciales contiene el enlace con su token en texto claro dentro de `data/correos/`; es la única copia fuera del correo real. La carpeta está en `.gitignore`, pero cualquiera con acceso a la máquina puede leerla y usar el enlace mientras esté vigente; conviene vaciarla cuando ya no se necesite.
-- Las cuentas creadas con la primera versión de la Fase 4a (commit `7c059c7`) tienen una contraseña temporal en su `.eml`; no se migraron.
+- Las cuentas creadas con la primera versión de la Fase 4a (commit `7c059c7`) tienen una contraseña temporal en su `.eml`; no se migraron. Como tienen la marca "debe cambiar contraseña", el botón "Reenviar enlace de acceso" les aparece, y su contraseña temporal vieja sigue funcionando hasta que la cambien (con el enlace o con "Crea tu nueva contraseña").
+- El límite de reenvíos (3 por hora por cuenta, sumando reenvíos y reintentos) vive en memoria: se borra al reiniciar el servidor, también con `node --watch`.
 - El límite de enlaces no válidos es por IP y vive en memoria, igual que los del login: se borra al reiniciar el servidor y una red compartida lo agota entre todos.
 
 Funcionalidad:
 
 - La calculadora (`CalculadoraSolar`) no tiene ningún acceso desde los menús; solo se llega por código. Su código se conserva. La ruta que usa (`PUT /api/prospectos/:id/consumo`) ahora exige sesión de Administrador o Agente, y la calculadora ya enviaba el token.
 - Tickets técnicos, reactivación comercial y evidencias fotográficas siguen en memoria del navegador (`useState`); la evidencia es simulada.
-- Correos (Fase 4a): todavía no hay pantalla "Notificaciones", reintento de fallidos, reenvío de credenciales ni lista de correos en el detalle del agente (Fase 4b). El recordatorio de mantenimiento no tiene disparador porque el módulo de mantenimientos no existe.
+- El recordatorio de mantenimiento no tiene disparador porque el módulo de mantenimientos no existe, y en la pantalla Notificaciones no se puede reintentar.
+- Reintentar reutiliza la misma fila de `registro_notificaciones` (sube `intentos`); no queda historial de cada intento por separado. Un reenvío desde el detalle sí crea una fila nueva.
+- La pantalla Notificaciones muestra hasta 50 por página, sin búsqueda por destinatario.
 - El envío ocurre dentro de la petición, después del COMMIT: con SMTP lento, el registro de una solicitud o la aprobación pueden tardar hasta el tiempo máximo (15 s) antes de responder.
 - `detalle_error` también guarda el detalle "Modo simulado…" de los correos simulados, que no son errores. La tabla no tiene una columna de detalle aparte.
 - Las tablas `firmas_cotizacion`, `ordenes_instalacion`, `checklist_evidencias` y `mantenimientos_programados` existen desde la Fase A, pero ninguna ruta las usa todavía.
@@ -136,6 +140,10 @@ Respuestas comunes:
 | POST | /api/logout | Cualquier sesión | Cierra la sesión actual |
 | POST | /api/portal/validar-enlace | Público | Dice si el token del enlace "Crea tu contraseña" sigue vigente, sin consumirlo. 400 genérico `enlace_invalido`; 429 `limite_enlace` |
 | POST | /api/portal/crear-contrasena | Público | Con token, contraseña y confirmación: consume el token (un solo uso), guarda la contraseña, cierra las sesiones de la cuenta y no inicia sesión. Errores por campo sin consumir el token; 400 genérico `enlace_invalido`; 429 `limite_enlace` |
+| POST | /api/solicitudes/:id/reenviar-credenciales | Agente responsable, Administrador | Token nuevo (invalida el anterior), cierra sesiones y envía el enlace; responde `{ correo }` sin token. 409 `acceso_creado`; 429 `limite_reenvio`; 404 en papelera u otro agente |
+| GET | /api/solicitudes/:id/notificaciones | Agente responsable, Administrador | Correos de la solicitud y `acceso_pendiente`. 404 en papelera u otro agente |
+| GET | /api/notificaciones | Administrador | `?estado=&tipo=&pagina=`, 50 por página; clientes eliminados anonimizados |
+| POST | /api/notificaciones/:id/reintentar | Administrador | Solo fallidas de clientes activos; misma fila (`intentos` + 1); credenciales con token nuevo. 409 con el motivo; 429 `limite_reenvio` |
 | POST | /api/portal/cambiar-contrasena | Cliente | Cambia la contraseña; cierra las demás sesiones de la cuenta (su 401 dirá `contrasena_cambiada`); 429 tras 5 contraseñas actuales incorrectas en 10 minutos |
 | GET | /api/portal/prospectos/:id | Cliente (solo el suyo) | Datos del portal, solicitud y cotización emitida con su estimación de ahorro guardada |
 | GET | /api/productos | Administrador, Agente, Técnico | Catálogo (el administrador ve también inactivos) |
@@ -204,7 +212,7 @@ Columnas agregadas sin cambiar `user_version` (idempotentes, en cada arranque):
 - Fase 3 del plan actual (`861e96c`): `cuentas_cliente.debe_cambiar_password`, `password_actualizada_at`.
 - Fase 4a (`7c059c7`): `registro_notificaciones.solicitud_id`, `intentos`, `ultimo_intento_at`, `archivo` e índice `notificaciones_solicitud_idx`.
 - Cambio de la Fase 4a (`b09bf67`): tabla nueva `tokens_cuenta` (con `CREATE TABLE IF NOT EXISTS`, sin migración de columnas).
-- Papelera de clientes (sin commit): `prospectos` y `solicitudes_cotizacion` reciben `eliminado_at`, `eliminado_por`, `motivo_eliminacion` y `eliminacion_lote` (NULL por defecto), con índices `prospectos_eliminado_idx` y `solicitudes_eliminado_idx`.
+- Papelera de clientes (`527894e`): `prospectos` y `solicitudes_cotizacion` reciben `eliminado_at`, `eliminado_por`, `motivo_eliminacion` y `eliminacion_lote` (NULL por defecto), con índices `prospectos_eliminado_idx` y `solicitudes_eliminado_idx`.
 - Corrección de estados (`2dd526a`): no agrega columnas; en cada arranque completa `direcciones_cliente.estado_codigo` cuando el texto se reconoce y reporta las que no.
 
 Tablas y en qué commit aparecieron:
@@ -241,9 +249,35 @@ Tablas y en qué commit aparecieron:
 
 ## Historial
 
-### Clientes y papelera: borrado lógico, restauración y eliminación definitiva
+### Fase 4b: reenvío del enlace de acceso, pantalla "Notificaciones" y correos en el detalle
 
 - Estado: **implementado. Sin commit.**
+- Por qué: cerrar la Fase 4. Sin reenvío, un enlace vencido o un correo fallido dejaba al cliente sin acceso, y el administrador no tenía dónde ver ni reintentar los correos.
+- Reenviar enlace de acceso:
+  - botón "Reenviar enlace de acceso" en el bloque "Correos al cliente" del detalle de la solicitud (Cotizaciones Emitidas), visible para el agente responsable y el administrador, solo mientras el cliente no haya creado su contraseña (`debe_cambiar_password = 1`). Confirmación en `Modal`; el resultado se muestra con el aviso de correo existente (aceptado, modo simulado con su `.eml`, o ámbar si falla);
+  - `POST /api/solicitudes/:id/reenviar-credenciales`: emite un token nuevo con `emitirTokenCuenta` (borra los anteriores), cierra las sesiones de la cuenta, envía el correo con el enlace y crea una fila nueva en `registro_notificaciones`. Responde `{ correo }`, sin token ni enlace;
+  - 409 `acceso_creado` si el cliente ya creó su contraseña; 404 si la solicitud o el cliente están en la papelera; 404 para otro agente (igual que el detalle); 403 para el técnico.
+- Límite: 3 envíos por hora por cuenta de cliente, sumando reenvíos y reintentos (`ATLAS_REENVIO_MAX_HORA`), en memoria. 429 `limite_reenvio`: "Ya se enviaron 3 correos a esta cuenta en la última hora. Espera N minutos e inténtalo de nuevo." Solo cuentan los envíos que se hacen; un 404 o un 409 no consumen cupo.
+- Correos en el detalle: `GET /api/solicitudes/:id/notificaciones` (agente responsable o administrador; mismo filtro de papelera, 404) devuelve tipo, fechas, estado, intentos y detalle de cada correo de esa solicitud, y `acceso_pendiente` para decidir si se muestra el botón.
+- Pantalla "Notificaciones" (solo Administrador; menú con el ícono ✉️):
+  - tabla con número, destinatario (y nombre del cliente), tipo, fecha, estado, intentos y detalle; filtros por estado y tipo; 50 por página con "Anterior / Siguiente";
+  - "Reintentar" solo en fallidas de clientes activos: credenciales emite un token nuevo (el anterior nunca se guardó) mientras el cliente no haya creado su contraseña; "cotización lista" reenvía el aviso si la solicitud tiene cotización. Reutiliza la misma fila (`intentos` + 1). Mismo límite que el reenvío;
+  - las de clientes en la papelera aparecen con la etiqueta "En papelera" y sin reintento; las de clientes eliminados definitivamente aparecen con el destinatario anonimizado (`eliminado-<id>@anonimo.invalid`), sin nombre, sin detalle, sin solicitud y sin reintento;
+  - `GET /api/notificaciones?estado=&tipo=&pagina=` y `POST /api/notificaciones/:id/reintentar` (409 con el motivo si no se puede reintentar).
+- Lo que nunca aparece: ninguna respuesta de la API, fila de `registro_notificaciones`, texto de la interfaz ni salida del servidor contiene el token ni el enlace (comprobado en las pruebas y en el HTML de la página en la prueba de interfaz). Los avisos de la pantalla Notificaciones mencionan el número de notificación, nunca el correo, y los datos de clientes eliminados definitivamente ya llegan anonimizados desde el servidor.
+- Base de datos: sin cambios de esquema. Se usan las columnas existentes de `registro_notificaciones` (`intentos`, `ultimo_intento_at`, `estado_envio`, `detalle_error`) y `tokens_cuenta`.
+- Archivos: `src/Notificaciones.jsx`, `src/CorreosSolicitud.jsx`, `src/correosComunes.js`, `server/notificaciones.test.js`, `server/pruebas/smtpFalso.js` (nuevos; el SMTP falso se movió desde `correo.test.js` y ahora puede cambiar de modo); `server/api.js`, `server/correo.js` (`reintentarNotificacion`), `server/correo.test.js`, `src/App.jsx` (solo la entrada del menú, la sección y el bloque de correos del detalle, que contiene el botón).
+- Pruebas (`server/notificaciones.test.js`, 13): reenvío válido con enlace anterior invalidado, correos en el detalle para agente y administrador, permisos (401, 403 técnico, 404 otro agente, 403 a la pantalla de administrador), agente que solo ve sus solicitudes, 409 si ya creó su contraseña, 404 con cliente o estimación en la papelera, límite de 3 sumando reenvío y reintento, reintento de credenciales (misma fila y token nuevo) y de cotización lista, sin reintento para papelera y eliminados (anonimizados), filtros y paginación, SMTP que rechaza y luego acepta al reintentar, y ningún token en respuestas, registros, `tokens_cuenta` ni consola. Base, correos y respaldos temporales.
+- Cómo probar en la interfaz (modo simulado, sin `.env`):
+  1. Como `ventas@atlas.com`, registra una solicitud y abre su detalle en Cotizaciones Emitidas: el bloque "Correos al cliente" muestra "Enlace de acceso · Pendiente" y el botón "Reenviar enlace de acceso".
+  2. Reenvía: confirma en el modal; el aviso indica el `.eml` nuevo y la lista muestra dos correos. El enlace del primer `.eml` ya no sirve; el del segundo sí.
+  3. Reenvía dos veces más: la cuarta vez en la misma hora responde con el mensaje del límite.
+  4. Crea la contraseña con el último enlace y vuelve a abrir el detalle: el botón ya no aparece.
+  5. Como `admin@atlas.com`, abre Notificaciones: filtra por estado y tipo. En modo simulado no hay fallidas; para ver "Reintentar", configura en `.env` un SMTP inalcanzable (`SMTP_HOST=127.0.0.1`, `SMTP_PORT=9`), reinicia, registra una solicitud (queda "Fallido"), quita esas líneas, reinicia y pulsa "Reintentar".
+
+### Clientes y papelera: borrado lógico, restauración y eliminación definitiva
+
+- Estado: **implementado.** Commit `527894e`.
 - Por qué: el administrador necesita gestionar clientes y estimaciones (por ejemplo, limpiar registros de prueba) sin perder información por error. Primero van a una papelera de la que se pueden restaurar; el borrado físico solo ocurre desde ahí y con confirmación explícita.
 - Pantalla "Clientes" (solo Administrador; menú con el ícono 🗂️, visible con el menú contraído):
   - tabla con nombre, correo, estado geográfico, número de solicitudes, estatus de la solicitud más reciente y fecha de alta (o de eliminación y motivo en "Eliminados"), buscador por nombre o correo y selector "Activos / Eliminados";

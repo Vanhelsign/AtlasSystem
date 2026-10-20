@@ -9,7 +9,7 @@ import { db, getProspecto, prospectSelect } from './database.js'
 import { ESTADOS_MEXICO, nombreEstadoMexico, normalizarEstadoMexico } from '../shared/estadosMexico.js'
 import { estimarAhorro, faltantesDeTarifa, kwpDePaneles, PARAMETROS_POR_DEFECTO, validarBloques } from '../shared/ahorroSolar.js'
 import { horasSolaresPico } from '../shared/irradiacion.js'
-import { borrarArchivosCorreo, describirModoCorreo, enviarCotizacionLista, enviarCredenciales } from './correo.js'
+import { borrarArchivosCorreo, describirModoCorreo, enviarCotizacionLista, enviarCredenciales, reintentarNotificacion } from './correo.js'
 import {
   detalleCliente, eliminarCliente, eliminarDefinitivamente, eliminarSolicitud, ErrorPapelera, listarClientes,
   restaurarCliente, restaurarSolicitud, validarMotivo,
@@ -180,6 +180,8 @@ const limiteLoginCuenta = crearLimitador({ maximo: enteroEntorno('ATLAS_LOGIN_MA
 const limiteLoginIp = crearLimitador({ maximo: enteroEntorno('ATLAS_LOGIN_MAX_IP', 20), ventanaMs: ventanaLoginMs })
 // Enlaces para crear contraseña: 10 tokens inválidos por IP en 15 minutos, sumando validar y crear.
 const limiteEnlaceIp = crearLimitador({ maximo: enteroEntorno('ATLAS_ENLACE_MAX_IP', 10), ventanaMs: 15 * 60 * 1000 })
+// Reenvíos de enlace y reintentos de correos: 3 por hora por cuenta de cliente, sumando ambos.
+const limiteReenvioCuenta = crearLimitador({ maximo: enteroEntorno('ATLAS_REENVIO_MAX_HORA', 3), ventanaMs: 60 * 60 * 1000 })
 
 // Tokens cerrados por un motivo conocido, para explicar el 401 en la otra ventana. Se descartan a las 24 h.
 const sesionesRevocadas = new Map()
@@ -2072,6 +2074,163 @@ app.post('/api/admin/solicitudes/:id/eliminar-definitivamente', ...soloAdministr
   const { conteo, respaldo } = eliminarDefinitivamente({ solicitudId: id })
   response.json({ eliminado: true, conteo, respaldo: basename(respaldo) })
 }))
+
+// ─── Reenvío de enlace y notificaciones (Fase 4b) ───────────────
+// Ninguna respuesta ni fila de registro_notificaciones contiene el token ni el enlace: solo viajan en el correo.
+
+const cerrarSesionesCuenta = (cuentaId) => {
+  for (const [token, sesion] of [...sesiones]) {
+    if (sesion.rol === 'Cliente' && sesion.cuenta_id === cuentaId) sesiones.delete(token)
+  }
+}
+
+// Revisa el límite de reenvíos de la cuenta y, si hay cupo, lo consume. Devuelve false si ya respondió 429.
+const consumirCupoReenvio = (response, clave) => {
+  const minutos = limiteReenvioCuenta.minutosBloqueo(clave)
+  if (minutos) {
+    response.status(429).json({ error: `Ya se enviaron ${limiteReenvioCuenta.maximo} correos a esta cuenta en la última hora. Espera ${minutosTexto(minutos)} e inténtalo de nuevo.`, codigo: 'limite_reenvio' })
+    return false
+  }
+  limiteReenvioCuenta.registrarFallo(clave)
+  return true
+}
+
+const emitirTokenEnTransaccion = (cuentaId) => {
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const token = emitirTokenCuenta(cuentaId)
+    db.exec('COMMIT')
+    return token
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+// Solicitud activa (fuera de la papelera) con su cliente y cuenta. Un agente que no es el responsable recibe
+// null (404), igual que en el detalle de la solicitud.
+function solicitudConCuenta(request, id) {
+  const solicitud = db.prepare(`
+    SELECT s.id, s.prospecto_id, s.agente_responsable_id, p.nombre, COALESCE(c.email, p.email) AS email,
+           c.id AS cuenta_id, c.debe_cambiar_password
+    FROM solicitudes_cotizacion s
+    JOIN prospectos p ON p.id = s.prospecto_id
+    LEFT JOIN cuentas_cliente c ON c.prospecto_id = p.id
+    WHERE s.id = ? AND ${ACTIVA}
+  `).get(id)
+  if (!solicitud) return null
+  if (request.usuario.rol === 'Agente' && solicitud.agente_responsable_id !== request.usuario.usuario_id) return null
+  return solicitud
+}
+
+app.post('/api/solicitudes/:id/reenviar-credenciales', autenticar, permitirRoles('Administrador', 'Agente'), async (request, response) => {
+  const id = idValido(request.params.id)
+  if (!id) return response.status(400).json({ error: 'Identificador inválido' })
+  const solicitud = solicitudConCuenta(request, id)
+  if (!solicitud) return response.status(404).json({ error: 'Solicitud no encontrada' })
+  if (!solicitud.cuenta_id || !solicitud.email) return response.status(409).json({ error: 'El cliente no tiene cuenta del portal' })
+  if (!solicitud.debe_cambiar_password) return response.status(409).json({ error: 'El cliente ya creó su contraseña; no hace falta reenviar el enlace de acceso.', codigo: 'acceso_creado' })
+  if (!consumirCupoReenvio(response, `cuenta:${solicitud.cuenta_id}`)) return
+  // El token nuevo invalida los anteriores; se cierra cualquier sesión abierta de la cuenta.
+  const token = emitirTokenEnTransaccion(solicitud.cuenta_id)
+  cerrarSesionesCuenta(solicitud.cuenta_id)
+  const correo = await enviarCredenciales({
+    destinatario: solicitud.email, nombre: solicitud.nombre, token, horasVigencia: HORAS_VIGENCIA_ENLACE,
+    prospectoId: solicitud.prospecto_id, solicitudId: id,
+  })
+  response.json({ correo })
+})
+
+app.get('/api/solicitudes/:id/notificaciones', autenticar, permitirRoles('Administrador', 'Agente'), (request, response) => {
+  const id = idValido(request.params.id)
+  if (!id) return response.status(400).json({ error: 'Identificador inválido' })
+  const solicitud = solicitudConCuenta(request, id)
+  if (!solicitud) return response.status(404).json({ error: 'Solicitud no encontrada' })
+  const notificaciones = db.prepare(`
+    SELECT id, tipo_correo, estado_envio, intentos, created_at, ultimo_intento_at, enviado_at, detalle_error
+    FROM registro_notificaciones WHERE solicitud_id = ? ORDER BY id DESC
+  `).all(id)
+  response.json({ notificaciones, acceso_pendiente: Boolean(solicitud.cuenta_id && solicitud.debe_cambiar_password) })
+})
+
+// Notificación con el estado de su cliente, cuenta y solicitud, para decidir si se puede reintentar.
+const notificacionSelect = `
+  SELECT n.id, n.destinatario_email, n.tipo_correo, n.estado_envio, n.detalle_error, n.intentos,
+         n.created_at, n.ultimo_intento_at, n.enviado_at, n.prospecto_id, n.solicitud_id,
+         p.nombre AS cliente_nombre, p.eliminado_at AS cliente_eliminado_at, COALESCE(c.email, p.email) AS cliente_email,
+         s.eliminado_at AS solicitud_eliminada_at, c.id AS cuenta_id, c.debe_cambiar_password,
+         (SELECT COUNT(*) FROM cotizaciones_versiones WHERE solicitud_id = n.solicitud_id) AS cotizaciones
+  FROM registro_notificaciones n
+  LEFT JOIN prospectos p ON p.id = n.prospecto_id
+  LEFT JOIN cuentas_cliente c ON c.prospecto_id = n.prospecto_id
+  LEFT JOIN solicitudes_cotizacion s ON s.id = n.solicitud_id
+`
+// Motivo por el que no se puede reintentar, o null si se puede.
+function motivoSinReintento(fila) {
+  if (fila.estado_envio !== 'fallido') return 'Solo se pueden reintentar los correos fallidos.'
+  if (!fila.prospecto_id) return 'El cliente se eliminó definitivamente; este correo no se puede reintentar.'
+  if (fila.cliente_eliminado_at || fila.solicitud_eliminada_at) return 'El cliente o la solicitud están en la papelera; restáuralos para reintentar.'
+  if (fila.tipo_correo === 'credenciales' && (!fila.cuenta_id || !fila.debe_cambiar_password)) return 'El cliente ya creó su contraseña; no hace falta reenviar el enlace de acceso.'
+  if (fila.tipo_correo === 'cotizacion_lista' && !fila.cotizaciones) return 'La solicitud ya no tiene una cotización emitida.'
+  if (fila.tipo_correo === 'recordatorio') return 'Los recordatorios todavía no se pueden reintentar.'
+  if (!fila.cliente_email) return 'El cliente no tiene correo registrado.'
+  return null
+}
+// Lo que ve el administrador: sin datos del cliente si se eliminó definitivamente (el destinatario ya está anonimizado).
+const notificacionPublica = (fila) => ({
+  id: fila.id,
+  destinatario: fila.destinatario_email,
+  tipo: fila.tipo_correo,
+  estado: fila.estado_envio,
+  detalle: fila.detalle_error,
+  intentos: fila.intentos,
+  creada_at: fila.created_at,
+  ultimo_intento_at: fila.ultimo_intento_at,
+  enviado_at: fila.enviado_at,
+  solicitud_id: fila.prospecto_id ? fila.solicitud_id : null,
+  cliente: !fila.prospecto_id ? 'eliminado' : fila.cliente_eliminado_at || fila.solicitud_eliminada_at ? 'papelera' : 'activo',
+  cliente_nombre: fila.prospecto_id ? fila.cliente_nombre : null,
+  puede_reintentar: motivoSinReintento(fila) === null,
+})
+
+const TIPOS_CORREO = new Set(['credenciales', 'cotizacion_lista', 'recordatorio'])
+const ESTADOS_ENVIO = new Set(['pendiente', 'aceptado', 'fallido', 'entregado'])
+const POR_PAGINA_NOTIFICACIONES = 50
+
+app.get('/api/notificaciones', ...soloAdministrador, (request, response) => {
+  const estado = request.query.estado ?? ''
+  const tipo = request.query.tipo ?? ''
+  const pagina = request.query.pagina === undefined ? 1 : idValido(request.query.pagina)
+  if ((estado && !ESTADOS_ENVIO.has(estado)) || (tipo && !TIPOS_CORREO.has(tipo)) || !pagina) {
+    return response.status(400).json({ error: 'Filtro no válido' })
+  }
+  const condicion = 'WHERE (? = \'\' OR n.estado_envio = ?) AND (? = \'\' OR n.tipo_correo = ?)'
+  const parametros = [estado, estado, tipo, tipo]
+  const total = Number(db.prepare(`SELECT COUNT(*) AS total FROM registro_notificaciones n ${condicion}`).get(...parametros).total)
+  const filas = db.prepare(`${notificacionSelect} ${condicion} ORDER BY n.id DESC LIMIT ? OFFSET ?`)
+    .all(...parametros, POR_PAGINA_NOTIFICACIONES, (pagina - 1) * POR_PAGINA_NOTIFICACIONES)
+  response.json({ notificaciones: filas.map(notificacionPublica), total, pagina, por_pagina: POR_PAGINA_NOTIFICACIONES })
+})
+
+app.post('/api/notificaciones/:id/reintentar', ...soloAdministrador, async (request, response) => {
+  const id = idValido(request.params.id)
+  if (!id) return response.status(400).json({ error: 'Identificador inválido' })
+  const fila = db.prepare(`${notificacionSelect} WHERE n.id = ?`).get(id)
+  if (!fila) return response.status(404).json({ error: 'Notificación no encontrada' })
+  const motivo = motivoSinReintento(fila)
+  if (motivo) return response.status(409).json({ error: motivo })
+  if (!consumirCupoReenvio(response, fila.cuenta_id ? `cuenta:${fila.cuenta_id}` : `prospecto:${fila.prospecto_id}`)) return
+  let token = null
+  if (fila.tipo_correo === 'credenciales') {
+    // El token anterior nunca se guardó: se emite uno nuevo (invalida los anteriores) y se cierran sesiones.
+    token = emitirTokenEnTransaccion(fila.cuenta_id)
+    cerrarSesionesCuenta(fila.cuenta_id)
+  }
+  const correo = await reintentarNotificacion({
+    id, tipo: fila.tipo_correo, destinatario: fila.cliente_email, nombre: fila.cliente_nombre, token, horasVigencia: HORAS_VIGENCIA_ENLACE,
+  })
+  response.json({ correo, notificacion: notificacionPublica(db.prepare(`${notificacionSelect} WHERE n.id = ?`).get(id)) })
+})
 
 // Rutas antiguas de prospectos: desde la corrección de seguridad exigen sesión de Administrador o Agente.
 app.post('/api/prospectos', autenticar, permitirRoles('Administrador', 'Agente'), (request, response) => {

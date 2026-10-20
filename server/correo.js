@@ -121,6 +121,14 @@ export function enviarCredenciales({ destinatario, nombre, token, horasVigencia,
   return enviarCorreo({ tipo: 'credenciales', destinatario, nombre, datos: { enlace, horasVigencia }, prospectoId, solicitudId })
 }
 
+// Reintenta una notificación existente sobre la misma fila (intentos + 1). El mensaje se arma de nuevo desde la
+// plantilla: para credenciales hace falta un token nuevo, porque el anterior nunca se guardó.
+export function reintentarNotificacion({ id, tipo, destinatario, nombre, token = null, horasVigencia = null }) {
+  const datos = tipo === 'credenciales' ? { enlace: enlaceCrearContrasena(config.urlApp, token), horasVigencia } : {}
+  const { asunto, texto, html } = PLANTILLAS[tipo]({ nombre, email: destinatario, urlApp: config.urlApp, ...datos })
+  return intentarEnvio(id, tipo, { from: config.remitente, to: destinatario, subject: asunto, text: texto, html })
+}
+
 export function enviarCotizacionLista({ destinatario, nombre, prospectoId, solicitudId }) {
   return enviarCorreo({ tipo: 'cotizacion_lista', destinatario, nombre, prospectoId, solicitudId })
 }
