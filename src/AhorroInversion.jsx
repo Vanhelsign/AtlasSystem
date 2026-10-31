@@ -1,5 +1,7 @@
-import { useState } from "react";
-import { fmt, fmtNumero } from "./ui.js";
+import { useEffect, useState } from "react";
+import { fmt, fmtCentavos, fmtNumero } from "./ui.js";
+import { pedirCompra, fechaCompra } from "./compraApi.js";
+import { BotonDocumento } from "./PortalCompra.jsx";
 
 // Colores de la gráfica, validados con el verificador de paletas (separación para daltonismo ΔE 31.7, contraste ≥ 3:1).
 const COLOR_ANTES = "#4F46E5";
@@ -94,7 +96,7 @@ function GraficaAhorro({ serie, precio, recuperacion }) {
           <p className="font-semibold text-slate-900">Año {filaActiva.anio}</p>
           <p className="text-slate-600"><b className="text-slate-900">{fmt(filaActiva.acumulado)}</b> acumulado</p>
           <p className="text-slate-600"><b className="text-slate-900">{fmt(filaActiva.ahorro)}</b> ahorro del año</p>
-          <p className="mt-1 text-slate-500">{filaActiva.acumulado >= precio ? "Inversión recuperada" : `Faltan ${fmt(precio - filaActiva.acumulado)}`}</p>
+          <p className="mt-1 font-semibold text-slate-700">{filaActiva.acumulado >= precio ? `Ahorro neto acumulado: ${fmt(filaActiva.acumulado - precio)}` : `Faltan ${fmt(precio - filaActiva.acumulado)} para recuperar la inversión`}</p>
         </div>
       )}
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-600">
@@ -136,13 +138,13 @@ function Contenedor({ children, onVolver }) {
       </div>
       {children}
       <div className="flex justify-end">
-        <button type="button" onClick={onVolver} className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Volver a mi cotización</button>
+        <button type="button" onClick={onVolver} className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Volver a Inicio</button>
       </div>
     </div>
   );
 }
 
-export default function AhorroInversion({ datos, cargando, error, onVolver }) {
+function DetalleAhorro({ datos, cargando, error, onVolver }) {
   if (cargando) return <Contenedor onVolver={onVolver}><p className="rounded-xl border bg-white p-5 text-sm text-slate-600">Cargando información…</p></Contenedor>;
   if (error) return <Contenedor onVolver={onVolver}><p className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">{error}</p></Contenedor>;
 
@@ -158,6 +160,7 @@ export default function AhorroInversion({ datos, cargando, error, onVolver }) {
     };
     return (
       <Contenedor onVolver={onVolver}>
+        <section className="rounded-2xl border bg-white p-6"><p className="font-semibold">Inversión inicial estimada · pago de contado</p><p className="mt-2 break-all text-3xl font-bold text-indigo-700">{fmtCentavos(cotizacion.precio_venta)}</p><p className="mt-1 text-sm text-slate-500">Importe de la compra confirmada. Las demás cifras requieren datos suficientes.</p></section>
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6">
           <p className="font-semibold text-amber-900">Estimación no disponible</p>
           <p className="mt-2 text-sm text-amber-900">{mensajes[ahorro?.estado] ?? ahorro?.motivo ?? "Esta cotización no incluye una estimación de ahorro."}</p>
@@ -170,11 +173,10 @@ export default function AhorroInversion({ datos, cargando, error, onVolver }) {
   const recuperacion = r.retorno_inversion_anios;
   const preliminar = ahorro.tarifa?.pendiente_validar || ahorro.irradiacion?.fuente?.startsWith("valor por defecto");
   const datosEstimacion = [
-    ["Consumo considerado", `${fmtNumero(ahorro.consumo_mensual_kwh, 1)} kWh/mes`, "Lo que pagas hoy"],
+    ["Consumo considerado", `${fmtNumero(ahorro.consumo_mensual_kwh, 1)} kWh/mes`, "Consumo mensual registrado, antes del crecimiento"],
     ["Consumo objetivo", ahorro.consumo_objetivo_kwh ? `${fmtNumero(ahorro.consumo_objetivo_kwh, 1)} kWh/mes` : "No registrado", "Con margen de crecimiento; usado para dimensionar"],
     ["Generación solar anual", `${fmtNumero(r.generacion_anual_kwh)} kWh`, `${fmtNumero(r.kwp, 2)} kWp instalados`],
-    ["Gasto CFE sin sistema", `${fmt(r.gasto_mensual_sin_sistema)} /mes`, r.dac_sin_sistema ? "Tarifa de alto consumo (DAC)" : "IVA incluido"],
-    ["Gasto CFE con sistema", `${fmt(r.gasto_mensual_con_sistema)} /mes`, r.generacion_supera_consumo ? "Solo cargos fijos: generas más de lo que consumes" : "IVA incluido"],
+    ["Gasto eléctrico sin sistema", `${fmtCentavos(r.gasto_mensual_sin_sistema)} /mes`, r.dac_sin_sistema ? "Supuesto de alto consumo (DAC)" : "Estimación con impuesto eléctrico configurado"],
   ];
 
   return (
@@ -183,25 +185,25 @@ export default function AhorroInversion({ datos, cargando, error, onVolver }) {
         <div>
           <span className="rounded bg-indigo-50 px-2 py-1 text-xs font-semibold text-indigo-700">Pago de contado</span>
           <p className="mt-3 font-semibold text-slate-900">Inversión inicial estimada</p>
-          <p className="text-sm text-slate-500">Monto de la cotización que recibiste</p>
+          <p className="text-sm text-slate-500">Importe final de la compra confirmada</p>
         </div>
         <div className="sm:text-right">
-          <p className="text-4xl font-bold text-indigo-700">{fmt(cotizacion.precio_venta)}</p>
-          <p className="text-sm text-slate-500">Pago único, IVA incluido</p>
+          <p className="break-all text-3xl font-bold text-indigo-700 sm:text-4xl">{fmtCentavos(cotizacion.precio_venta)}</p>
+          <p className="text-sm text-slate-500">Pago único de contado · MXN</p>
         </div>
       </section>
 
       <div className="grid gap-4 md:grid-cols-3">
-        <Tarjeta titulo="Ahorro mensual estimado" valor={fmt(r.ahorro_mensual)} nota="Según tu consumo y la tarifa considerada" color={COLOR_ANTES} />
-        <Tarjeta titulo="Ahorro anual estimado" valor={fmt(r.ahorro_anual)} nota="Equivalente aproximado de doce meses" color={COLOR_RECUPERADO} />
-        <Tarjeta titulo="Tiempo de recuperación" valor={recuperacion === null ? "Más de 30 años" : `${fmtNumero(recuperacion, 1)} años`} nota="Ahorro acumulado frente a la inversión" color={COLOR_ANTES} />
+        <Tarjeta titulo="Ahorro mensual estimado" valor={fmtCentavos(r.ahorro_mensual)} nota="Según tu consumo y la tarifa considerada" color={COLOR_ANTES} />
+        <Tarjeta titulo="Ahorro anual estimado" valor={fmtCentavos(r.ahorro_anual)} nota="Equivalente aproximado de doce meses" color={COLOR_RECUPERADO} />
+        <Tarjeta titulo="Tiempo estimado de recuperación" valor={recuperacion === null ? "No alcanzada" : `${fmtNumero(recuperacion, 1)} años`} nota={r.ahorro_anual <= 0 ? "Sin ahorro estimado: no es posible recuperar la inversión" : recuperacion === null ? "El ahorro no cubre la inversión dentro de 30 años; la gráfica muestra los primeros 10" : "Primer cruce del ahorro acumulado con la inversión"} color={COLOR_ANTES} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
         <section className="rounded-2xl border bg-white p-5">
           <h2 className="text-lg font-semibold text-slate-900">Proyección del ahorro acumulado</h2>
           <p className="mb-4 text-sm text-slate-500">Comparación ilustrativa entre el ahorro y el costo del proyecto.</p>
-          <GraficaAhorro serie={r.serie} precio={cotizacion.precio_venta} recuperacion={recuperacion} />
+          <div className="overflow-x-auto"><div className="min-w-[380px]"><GraficaAhorro serie={r.serie} precio={cotizacion.precio_venta} recuperacion={recuperacion} /></div></div>
         </section>
         <section className="space-y-3 rounded-2xl border bg-white p-5">
           <h2 className="text-lg font-semibold text-slate-900">Datos de la estimación</h2>
@@ -221,12 +223,56 @@ export default function AhorroInversion({ datos, cargando, error, onVolver }) {
 
       <section className="rounded-2xl border border-indigo-200 bg-indigo-50 p-6">
         <h2 className="text-lg font-semibold text-slate-900">¿Cómo se estima el retorno?</h2>
-        <p className="mt-2 text-sm text-slate-700">El ahorro anual compara el gasto eléctrico estimado antes y después del sistema, con la tarifa de CFE por bloques y el IVA incluidos. El tiempo de recuperación relaciona ese ahorro con el pago inicial de contado, considerando que los paneles pierden {fmtNumero((ahorro.parametros?.degradacion_anual ?? 0) * 100, 1)}% de generación cada año.</p>
+        <p className="mt-2 text-sm text-slate-700">El ahorro mensual es la diferencia entre los gastos estimados sin y con sistema; el anual equivale a doce meses. Se usan los precios por bloque y cargos eléctricos guardados con esta cotización como supuestos, no como tarifas vigentes verificadas de CFE. La recuperación ocurre cuando el ahorro acumulado alcanza el pago inicial.</p>
+        <p className="mt-2 text-sm text-slate-700">Generación anual = potencia de paneles (kWp) × horas solares pico diarias × 365 × eficiencia ({fmtNumero((ahorro.parametros?.eficiencia ?? 0) * 100, 1)} %). La serie reduce el ahorro un {fmtNumero((ahorro.parametros?.degradacion_anual ?? 0) * 100, 1)} % anual como aproximación y aplica un alza eléctrica supuesta de {fmtNumero((ahorro.parametros?.alza_tarifa_anual ?? 0) * 100, 1)} %. No incluye financiamiento, mantenimiento ni reemplazos.</p>
         <p className="mt-3 text-sm font-semibold text-slate-800">Cifras aproximadas: pueden variar según tu consumo real, la tarifa vigente y la generación real. Esta proyección orienta la decisión y no representa un ahorro garantizado.</p>
+        <details className="mt-3 text-sm text-slate-700"><summary className="cursor-pointer font-semibold">Supuestos eléctricos guardados con esta compra</summary>
+          {[ahorro.tarifa, ahorro.tarifa_dac].filter(Boolean).map((tarifa) => <div key={tarifa.codigo} className="mt-3 rounded-lg bg-white p-3"><p className="font-semibold">{tarifa.codigo} · {tarifa.nombre}</p><p>Cargo fijo mensual: {fmt(tarifa.cargo_fijo_mensual)}. Precios antes del impuesto eléctrico.</p><ul className="list-inside list-disc">{tarifa.bloques?.map((b, i) => <li key={i}>{b.temporada}: {b.desde_kwh}–{b.hasta_kwh ?? "sin límite"} kWh a {fmt(b.precio_kwh)} MXN/kWh</li>)}</ul></div>)}
+          <p className="mt-2">Impuesto eléctrico supuesto: {fmtNumero(ahorro.parametros?.iva * 100, 1)} %. Meses de verano: {ahorro.parametros?.meses_verano}. Fuente solar: {ahorro.irradiacion?.fuente}. Copia de estimación: {fechaCompra(ahorro.calculado_at)}.</p>
+        </details>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-600">
           {SIMPLIFICACIONES.map((texto) => <li key={texto}>{texto}</li>)}
         </ul>
       </section>
     </Contenedor>
   );
+}
+
+export default function AhorroInversion({ token, onVolver }) {
+  const [compras, setCompras] = useState([]);
+  const [seleccion, setSeleccion] = useState("");
+  const [cotizacion, setCotizacion] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    pedirCompra(token, "/api/portal/ahorro", undefined, { signal: controller.signal })
+      .then((lista) => {
+        setCompras(lista); setSeleccion(lista[0] ? String(lista[0].cotizacion_id) : "");
+        if (!lista.length) { setError("No hay compras de contado confirmadas disponibles."); setCargando(false); }
+      }).catch((err) => { if (!controller.signal.aborted) { setError(err.message); setCargando(false); } });
+    return () => controller.abort();
+  }, [token]);
+  useEffect(() => {
+    if (!seleccion) return;
+    const controller = new AbortController();
+    pedirCompra(token, `/api/portal/ahorro/${seleccion}`, undefined, { signal: controller.signal })
+      .then((datos) => { setCotizacion(datos); setCargando(false); })
+      .catch((err) => { if (!controller.signal.aborted) { setError(err.message); setCargando(false); } });
+    return () => controller.abort();
+  }, [token, seleccion]);
+  const cambiar = (event) => {
+    setCargando(true); setError(""); setCotizacion(null); setSeleccion(event.target.value);
+  };
+  return <div>
+    {!!compras.length && <section className="mx-auto flex max-w-5xl flex-col gap-4 px-4 pt-6 sm:flex-row sm:flex-wrap sm:items-end sm:px-6 lg:px-8">
+      <label className="min-w-0 text-sm font-semibold text-slate-700 sm:flex-1">Proyecto / cotización de la compra
+        <select value={seleccion} onChange={cambiar} className="mt-1 w-full rounded-lg border bg-white p-2 font-normal">
+          {compras.map((c) => <option key={c.cotizacion_id} value={c.cotizacion_id}>Cotización #{c.cotizacion_id} · versión {c.version} · {c.folio_pago} · {fechaCompra(c.confirmada_at)} · {fmt(c.importe)}</option>)}
+        </select>
+      </label>
+      <BotonDocumento key={seleccion} token={token} ruta={`/api/cotizaciones/${seleccion}/pdf`}>Volver a la cotización relacionada (PDF)</BotonDocumento>
+    </section>}
+    <DetalleAhorro datos={{ cotizacion_emitida: cotizacion }} cargando={cargando} error={error} onVolver={onVolver}/>
+  </div>;
 }

@@ -100,9 +100,9 @@ Funcionalidad:
 - La pantalla Notificaciones muestra hasta 50 por página, sin búsqueda por destinatario.
 - El envío ocurre dentro de la petición, después del COMMIT: con SMTP lento, el registro de una solicitud o la aprobación pueden tardar hasta el tiempo máximo (15 s) antes de responder.
 - `detalle_error` también guarda el detalle "Modo simulado…" de los correos simulados, que no son errores. La tabla no tiene una columna de detalle aparte.
-- Las tablas `firmas_cotizacion`, `ordenes_instalacion`, `checklist_evidencias` y `mantenimientos_programados` existen desde la Fase A, pero ninguna ruta las usa todavía.
+- Las tablas `firmas_cotizacion` y `ordenes_instalacion`, preparadas desde la Fase A, ya se usan en la compra descrita en el historial. `checklist_evidencias` y `mantenimientos_programados` aún no tienen un flujo de operaciones conectado.
 - En "Editar tarifa", lo escrito en "Desde un recibo" sin pulsar "Aplicar" no cuenta como cambio sin guardar.
-- `README.md` no se ha actualizado desde el commit inicial: no describe las integraciones 2 y 6 ni las fases recientes.
+- `README.md` incluye ahora la aceptación, firma, orden de pago, configuración de cobro y verificación administrativa. El detalle histórico de las integraciones 2 y 6 continúa en este archivo.
 - `server/index.js` solo importa `api.js` y conserva código antiguo comentado.
 - `npm audit` reporta 14 vulnerabilidades (11 altas, 2 moderadas, 1 baja), todas en herramientas de desarrollo: Vite 8.0.x, Tailwind 3, PostCSS, Babel y sus dependencias. `npm audit --omit=dev` da 0. Revisado de nuevo el 2026-10-19 al instalar `nodemailer`. Se atenderán después de la Fase 4 con `npm audit fix` sin `--force`; `braces` (vía Tailwind 3) solo se corrige pasando a `tailwindcss@4`, que no se hará.
 
@@ -251,6 +251,45 @@ Tablas y en qué commit aparecieron:
 ---
 
 ## Historial
+
+### Botón discreto y enlace del pago con ingresos e inicio de instalación
+
+- Botón circular de 20 px sin icono ni leyenda visible; conserva accesibilidad, espera y manejo de errores.
+- Pagos de prueba sumados al total de ingresos confirmados, con desglose real/simulado. Nueva consulta de agregados en SQLite; administrador global y agente filtrado por sesión.
+- La conversión asigna la orden al técnico de la revisión, si está activo y coincide su estado con la dirección. Se conservan las órdenes antiguas; las no asignadas son visibles al autor de la revisión y quedan vinculadas al iniciar.
+- Mis Tickets incorpora un listado persistente de órdenes pagadas y botón Iniciar instalación. Permisos de técnico, estado y responsable en backend; inicio idempotente, con `iniciada_at` guardado mediante migración aditiva.
+- No descuenta stock ni implementa el checklist completo. Los tickets de demostración se mantienen como tales. La marca de pago simulado continúa en la auditoría.
+
+### Pago de prueba activo por defecto en desarrollo local
+
+- Ya no es necesario crear `.env` ni activar tres variables: con `npm run server` y `npm run dev`, el botón circular aparece en Inicio cuando la orden está pendiente y vigente.
+- Frontend y backend usan desarrollo/simulación como valores por defecto. Las banderas explícitas `false` permiten desactivarlo; producción y el build continúan bloqueados.
+- Se mantienen los cinco segundos, consulta del estado al servidor, titularidad, idempotencia y marca permanente de pago simulado.
+- Se actualizan las pruebas de valores por defecto y la documentación; no cambian registros de SQLite por activar esta disponibilidad.
+
+### Propuesta PDF A4, boleta de pago y simulación protegida de conversión
+
+- Referencia de colores: `atlas-crm.pdf` anterior. Se mantiene el generador de servidor y el snapshot firmado actual, sin copiar precios fiscales ni condiciones antiguas del adjunto.
+- Cotización formal A4: encabezado ATLAS, prospecto/proyecto, tabla paginada de materiales y servicios, precios de venta, total y conformidad con firma, versión y fecha del servidor. Orden diferenciada: importe destacado, datos bancarios configurados, aviso de instrucciones pendientes, talón y advertencia de que no acredita un pago.
+- Configuración opcional de cobro estructurada, copiada a `ordenes_pago.datos_pago_json` al emitir. Los registros anteriores permanecen intactos y no reciben una cuenta bancaria inventada.
+- Botón circular en Inicio/Pago pendiente: requiere `NODE_ENV=development`, `ATLAS_PAGO_SIMULADO=true` y `VITE_ATLAS_PAGO_SIMULADO=true`. Espera cinco segundos y después consulta/muta mediante API y refresca el portal. Errores visibles, sin conversión local por temporizador.
+- Nueva ruta `POST /api/portal/ordenes-pago/:id/simular`: titular, orden pendiente, transacción e idempotencia. Producción siempre bloqueada, aun con bandera. El build de Vite también bloquea el botón mediante una marca de servidor de desarrollo.
+- Persistencia: `pago_simulado`, `simulada_por` y evento de confirmación explícitamente simulado. No registra transferencia ficticia ni administrador. Conserva una cuenta y una instalación. Las marcas son visibles en portal, administración y boleta, y se excluyen de ingresos reales.
+- Migración de la restricción de pagos con respaldo de la tabla poblada, copia transaccional, contador e integridad comprobada. No se reinicia la base del usuario.
+- Pruebas nuevas: PDF A4, todos los conceptos, tablas/notas largas, ausencia de IVA/encabezados inventados; seguridad de desarrollo/producción, repetición, permisos, persistencia y coexistencia con confirmación administrativa real. Ver configuración y recorrido en README.
+
+### Integraciones 5 y 7: aceptación, firma, orden de pago y compra confirmada
+
+- Basado en la sección 4.4 del PDF, con la descripción de 4.4.3 para el inicio confirmado (la Figura 15 está repetida).
+- Nuevo botón de aceptación, firma con ratón/dedo, PNG validado, conformidad, snapshot de conceptos/precio con SHA-256 y datos de auditoría. Documentos PDF privados generados en el servidor con la firma y fecha persistidas.
+- Desglose de venta prorrateado en centavos del precio aprobado; nunca se publican los costos internos. Se completa el desglose de versiones antiguas con migración aditiva.
+- Tablas nuevas `ordenes_pago` y `pagos_auditoria`; columnas aditivas en firmas, precios de venta y `cuentas_cliente.cliente_desde`. Se reutilizan `firmas_cotizacion` y `ordenes_instalacion`.
+- La firma cambia a `aceptada_pendiente_pago`; la orden sola no convierte ni confirma dinero. Confirmación por administrador activo con fecha real, referencia y casilla de verificación: `venta_confirmada`, identidad comercial Cliente y una sola orden de instalación sin técnico/fecha inventados. El rol interno de acceso se conserva para cuentas existentes.
+- Plazo de pago configurable, siete días por defecto. Vencimiento auditado al consultar o arrancar; confirmación tardía exige motivo. Instrucciones de cobro configurables en `.env`; sin datos reales se muestra "Instrucciones de pago pendientes". No hay pasarela ni cobros simulados.
+- Interfaz: `PortalCompra.jsx`, `PagosAdmin.jsx`, `compraApi.js`; backend: `compras.js`, `documentosCompra.js`; reglas de prorrateo: `shared/preciosVenta.js`.
+- Compatibilidad adicional: la papelera filtra los parámetros SQL usados, sin llamar a `setAllowUnknownNamedParameters`, ausente en Node 22.14. Incluye las nuevas relaciones de pagos en sus conteos y eliminación definitiva autorizada.
+- Pruebas aisladas: `server/compras.test.js`, `shared/preciosVenta.test.js`; el ayudante permite reiniciar la API con la misma base temporal. Casos de permisos, firma vacía/ajena/duplicada, PDF con imagen, conservación histórica, vencimiento, confirmación única, cuenta e instalación únicas y stock sin cambios.
+- Pendiente: rechazo del prospecto, pasarela/conciliación, pagos parciales y seguimiento detallado de instalación. Esta etapa no descuenta stock ni implementa compras.
 
 ### Ajuste: cambiar la contraseña invalida el enlace de acceso pendiente
 

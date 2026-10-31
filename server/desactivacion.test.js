@@ -6,7 +6,15 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { iniciarServidorPrueba, registrarSolicitudPrueba } from './pruebas/servidorPrueba.js'
+import { iniciarServidorPrueba, registrarSolicitudPrueba as registrarSolicitudActual } from './pruebas/servidorPrueba.js'
+
+// Estas pruebas conservan el caso de cuentas anteriores cuyo acceso dependía del enlace.
+// Las cuentas nuevas con acceso 123 se comprueban sin alterar su estado en correo.test.js.
+async function registrarSolicitudPrueba(servidor, ...argumentos) {
+  const registro = await registrarSolicitudActual(servidor, ...argumentos)
+  if (argumentos[2]?.contrasena === null) servidor.sql('UPDATE cuentas_cliente SET debe_cambiar_password = 1 WHERE prospecto_id = ?', registro.registro.id)
+  return registro
+}
 
 const tokenDe = (correo) => /#crear-contrasena=([A-Za-z0-9_-]{43})/.exec(correo.texto)?.[1]
 const CLAVE = 'ClavePropia2026'

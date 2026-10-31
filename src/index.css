@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+@keyframes pulso-instalacion {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(79 70 229 / 25%); }
+  50% { box-shadow: 0 0 0 7px rgb(79 70 229 / 0%); }
+}
+.fase-instalacion-actual { animation: pulso-instalacion 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .fase-instalacion-actual { animation: none; outline: 2px solid #a5b4fc; outline-offset: 3px; }
+}
+
 .receipt-note {
   position: relative;
   margin-bottom: 0.875rem;

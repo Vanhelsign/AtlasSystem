@@ -18,6 +18,11 @@ import Modal from "./Modal.jsx";
 import AvisoCorreo from "./AvisoCorreo.jsx";
 import FormularioCambioContrasena, { PantallaCambioObligatorio } from "./CambiarContrasena.jsx";
 import CrearContrasena from "./CrearContrasena.jsx";
+import { BotonDocumento, FirmarCotizacion, OrdenPago, ResumenEstadoCompra } from "./PortalCompra.jsx";
+import SeguimientoInstalacion from "./SeguimientoInstalacion.jsx";
+import InicioCliente from "./InicioCliente.jsx";
+import PagosAdmin from "./PagosAdmin.jsx";
+import InstalacionesTecnico from "./InstalacionesTecnico.jsx";
 import { tomarTokenDeEnlace } from "./enlaceAcceso.js";
 import { ESTADOS_MEXICO, nombreEstadoMexico } from "../shared/estadosMexico.js";
 
@@ -31,12 +36,6 @@ const IRRADIACION = { Monterrey: 5.4, "Ciudad de México": 5.1, Guadalajara: 5.3
 const CLIENTES_INACTIVOS_INICIALES = [
   { id: 101, nombre: "Industrias Alfa", ultima_compra: "2024-10-15", meses_inactivo: 18, estado_reactivacion: "Pendiente" },
   { id: 102, nombre: "Comercializadora del Norte", ultima_compra: "2025-05-20", meses_inactivo: 12, estado_reactivacion: "Pendiente" }
-];
-
-// NUEVO: Tickets de instalación/mantenimiento
-const TICKETS_INICIALES = [
-  { id: 501, cliente: "Sunrise Energy", tipo: "Instalación Nueva", estado: "Asignado", tecnico: "Juan Técnico", fecha: "2026-05-30" },
-  { id: 502, cliente: "Residencial Las Cumbres", tipo: "Mantenimiento Preventivo", estado: "En Progreso", tecnico: "Juan Técnico", fecha: "2026-05-25" }
 ];
 
 // NUEVO: ROLES COMPLETOS
@@ -101,79 +100,6 @@ function Login({ onLogin, aviso }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────
-//  MÓDULO: PORTAL TÉCNICO
-// ─────────────────────────────────────────────────────────
-const ESTATUS_TICKET = ["Asignado", "En Progreso", "Detenido", "Completado"];
-
-function ModalTicket({ ticket, onCerrar, onGuardar }) {
-  const [estatus, setEstatus] = useState(ticket.estado);
-  const [evidencia, setEvidencia] = useState(false);
-  return (
-    <Modal
-      titulo={`Ticket #${ticket.id}`}
-      descripcion={`${ticket.cliente} · ${ticket.tipo}`}
-      onCerrar={onCerrar}
-      onEnviar={() => onGuardar(estatus, evidencia)}
-      acciones={<>
-        <button type="button" onClick={onCerrar} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Cancelar</button>
-        <button type="submit" className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700">Guardar</button>
-      </>}
-    >
-      <label className="block text-sm font-medium">Estatus del ticket
-        <select value={estatus} onChange={(event) => setEstatus(event.target.value)} className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm font-normal">
-          {ESTATUS_TICKET.map((opcion) => <option key={opcion}>{opcion}</option>)}
-        </select>
-      </label>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={evidencia} onChange={(event) => setEvidencia(event.target.checked)} />Adjuntar fotografía de evidencia de la visita (simulado)</label>
-      <p className="text-xs text-slate-500">La evidencia todavía es una simulación: no se sube ningún archivo. Los tickets se guardan solo en esta sesión.</p>
-    </Modal>
-  );
-}
-
-function PortalTecnico({ tickets, setTickets }) {
-  const [ticketEditado, setTicketEditado] = useState(null);
-  const [mensaje, setMensaje] = useState("");
-
-  const guardarTicket = (estatus, evidencia) => {
-    setTickets(tickets.map((t) => t.id === ticketEditado.id ? { ...t, estado: estatus } : t));
-    setMensaje(`Ticket #${ticketEditado.id} actualizado a «${estatus}».${evidencia ? " Evidencia fotográfica registrada (simulación)." : ""}`);
-    setTicketEditado(null);
-  };
-
-  return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <h2 className="text-xl font-semibold">Mis Instalaciones y Tickets Asignados</h2>
-      {mensaje && <p role="status" className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{mensaje}</p>}
-      <div className="grid gap-4">
-        {tickets.map(t => (
-          <div key={t.id} className="bg-white p-4 rounded-xl border flex justify-between items-center">
-            <div>
-              <p className="font-bold text-slate-800">Ticket #{t.id} - {t.cliente}</p>
-              <p className="text-sm text-slate-500">Tipo: {t.tipo} | Fecha prog: {t.fecha}</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                t.estado === 'Completado' ? 'bg-green-100 text-green-700' : 
-                t.estado === 'Asignado' ? 'bg-blue-100 text-blue-700' : 
-                'bg-yellow-100 text-yellow-700'
-              }`}>
-                {t.estado}
-              </span>
-              <button
-                onClick={() => { setMensaje(""); setTicketEditado(t); }}
-                className="bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-indigo-100 transition-colors"
-              >
-                Actualizar estatus / Subir evidencia
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-      {ticketEditado && <ModalTicket ticket={ticketEditado} onCerrar={() => setTicketEditado(null)} onGuardar={guardarTicket} />}
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────
 //  MÓDULO: PORTAL CLIENTE (Dinámico)
@@ -221,20 +147,23 @@ function ResumenSolicitud({ solicitud }) {
   );
 }
 
-function PortalCliente({ usuarioActual, datos, cargando, error }) {
+function PortalCliente({ usuarioActual, datos, cargando, error, onAceptar, onOrden, onInstalacion, onActualizada }) {
   const prospecto = datos?.prospecto;
   const cotizacion = datos?.cotizacion_emitida;
+  const esCliente = prospecto?.rol_visible === "Cliente" || cotizacion?.orden_pago?.estado === "pagada";
 
   return (
     <div className="mx-auto max-w-4xl space-y-7 p-4 sm:p-6 lg:p-8">
-      <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Bienvenido, {prospecto?.nombre ?? usuarioActual.nombre}</h1>
+      <h1 className="break-words text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Bienvenido, {prospecto?.nombre ?? usuarioActual.nombre}</h1>
       <EstadoPortal cargando={cargando} error={error} />
-      {!cargando && !error && datos && (
+      {!cargando && !error && esCliente && <InicioCliente token={usuarioActual.token} onInstalacion={onInstalacion} />}
+      {!cargando && !error && !esCliente && cotizacion?.orden_pago && <ResumenEstadoCompra cotizacion={cotizacion} token={usuarioActual.token} onOrden={onOrden} onInstalacion={onInstalacion} prospectoId={usuarioActual.prospecto_id} onActualizada={onActualizada} />}
+      {!cargando && !error && datos && !esCliente && !cotizacion?.orden_pago && (
         <article className="receipt-note p-6 sm:p-8" aria-label="Resumen de la solicitud o cotización">
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-700">ATLAS · Resumen</p>
           <h2 className="mb-6 mt-2 text-2xl font-bold text-amber-950">{cotizacion?.estado ?? "Solicitud en preparación"}</h2>
           {cotizacion ? (
-            <div className="space-y-5"><dl className="grid gap-4 text-sm sm:grid-cols-2"><div><dt className="text-amber-800">Fecha de emisión</dt><dd className="font-semibold">{new Date(`${cotizacion.emitida_at.replace(" ", "T")}Z`).toLocaleString("es-MX")}</dd></div><div><dt className="text-amber-800">Precio final de venta</dt><dd className="text-xl font-bold">{fmt(cotizacion.precio_venta)}</dd></div></dl><div><h3 className="font-bold text-amber-950">Componentes incluidos</h3><ul className="mt-2 divide-y divide-amber-800/20 text-sm">{cotizacion.items.map((item, index) => <li key={`${item.modelo}-${index}`} className="flex justify-between gap-4 py-2"><span>{item.tipo} · {item.modelo}</span><b>{item.cantidad}</b></li>)}</ul></div><p className="text-xs text-amber-800">La aceptación de esta cotización todavía no está habilitada en el portal.</p></div>
+            <div className="space-y-5"><dl className="grid gap-4 text-sm sm:grid-cols-2"><div><dt className="text-amber-800">Folio y emisión</dt><dd className="font-semibold">{cotizacion.folio}<br/>{new Date(`${cotizacion.emitida_at.replace(" ", "T")}Z`).toLocaleString("es-MX")}</dd></div><div><dt className="text-amber-800">Precio final de venta</dt><dd className="text-xl font-bold">{fmt(cotizacion.precio_venta)}</dd></div></dl><div><h3 className="font-bold text-amber-950">Componentes incluidos</h3><ul className="mt-2 divide-y divide-amber-800/20 text-sm">{cotizacion.items.map((item, index) => <li key={`${item.modelo}-${index}`} className="flex justify-between gap-4 py-2"><span>{item.tipo} · {item.modelo}</span><b>{item.cantidad}</b></li>)}</ul></div><div className="flex flex-wrap gap-3">{!cotizacion.firmada && <button onClick={onAceptar} className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-indigo-700">Aceptar cotización</button>}<BotonDocumento token={usuarioActual.token} ruta={`/api/cotizaciones/${cotizacion.id}/pdf`}>Ver cotización en PDF</BotonDocumento></div></div>
           ) : <ResumenSolicitud solicitud={datos.solicitud} />}
         </article>
       )}
@@ -739,18 +668,29 @@ export default function App() {
   const [usuarioActual, setUsuarioActual] = useState(null);
 
   const [pagina, setPagina] = useState("dashboard");
-  const [sidebarContraido, setSidebarContraido] = useState(() => {
+  const [preferenciaSidebarContraido, setSidebarContraido] = useState(() => {
     try { return window.localStorage.getItem("atlas.sidebarContraido") === "1"; } catch { return false; }
   });
+  const [pantallaEstrecha, setPantallaEstrecha] = useState(() => window.matchMedia('(max-width: 639px)').matches);
+  const sidebarContraido = preferenciaSidebarContraido || pantallaEstrecha;
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 639px)');
+    const cambiar = (evento) => setPantallaEstrecha(evento.matches);
+    media.addEventListener('change', cambiar);
+    return () => media.removeEventListener('change', cambiar);
+  }, []);
   const [inventario, setInventario] = useState([]);
   const [errorInventario, setErrorInventario] = useState("");
   const [leads, setLeads] = useState([]);
   const [errorApi, setErrorApi] = useState("");
+  const [ingresos, setIngresos] = useState(null);
+  const [errorIngresos, setErrorIngresos] = useState("");
   const [inactivos, setInactivos] = useState(CLIENTES_INACTIVOS_INICIALES);
-  const [tickets, setTickets] = useState(TICKETS_INICIALES);
   const [leadActivo, setLeadActivo] = useState(null);
   const [resultadoSolar, setResultadoSolar] = useState(null);
   const [datosPortal, setDatosPortal] = useState(null);
+  const [ordenInstalacionSeleccionada, setOrdenInstalacionSeleccionada] = useState(null);
+  const [versionPortal, setVersionPortal] = useState(0);
   const [cargandoPortal, setCargandoPortal] = useState(false);
   const [errorPortal, setErrorPortal] = useState("");
   const [registroExitoso, setRegistroExitoso] = useState(null);
@@ -762,8 +702,11 @@ export default function App() {
   const limpiarSesion = () => {
     setUsuarioActual(null);
     setDatosPortal(null);
+    setOrdenInstalacionSeleccionada(null);
     setLeads([]);
     setInventario([]);
+    setIngresos(null);
+    setErrorIngresos("");
   };
 
   // Manejo global de 401: si una petición con el token actual responde 401 (sesión vencida o cerrada por un
@@ -802,7 +745,25 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [usuarioActual, versionLeads]);
+  }, [usuarioActual, versionLeads, pagina]);
+
+  useEffect(() => {
+    if (!usuarioActual || !["Administrador", "Agente"].includes(usuarioActual.rol)) return;
+    const controller = new AbortController();
+    fetch("/api/ventas/resumen", { signal: controller.signal, headers: { Authorization: `Bearer ${usuarioActual.token}` } })
+      .then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error); return data; })
+      .then((data) => { setIngresos(data); setErrorIngresos(""); })
+      .catch((error) => { if (error.name !== "AbortError") setErrorIngresos(error.message || "No se pudieron consultar los ingresos."); });
+    return () => controller.abort();
+  }, [usuarioActual, versionLeads, pagina]);
+
+  useEffect(() => {
+    if (!usuarioActual || !["Administrador", "Agente"].includes(usuarioActual.rol)) return;
+    const actualizar = () => setVersionLeads((actual) => actual + 1);
+    const intervalo = window.setInterval(actualizar, 30000);
+    window.addEventListener("focus", actualizar);
+    return () => { window.clearInterval(intervalo); window.removeEventListener("focus", actualizar); };
+  }, [usuarioActual]);
 
   useEffect(() => {
     if (!usuarioActual || !["Administrador", "Agente", "Técnico"].includes(usuarioActual.rol)) return;
@@ -825,7 +786,7 @@ export default function App() {
         if (!response.ok) throw new Error(data.error || "No se pudo cargar la información del portal.");
         return data;
       })
-      .then((data) => setDatosPortal(data))
+      .then((data) => { setDatosPortal(data); setErrorPortal(""); })
       .catch((error) => {
         if (error.name !== "AbortError") {
           setDatosPortal(null);
@@ -837,6 +798,14 @@ export default function App() {
       });
 
     return () => controller.abort();
+  }, [usuarioActual, versionPortal, pagina]);
+
+  useEffect(() => {
+    if (usuarioActual?.rol !== "Cliente" || usuarioActual.debe_cambiar_password) return;
+    const actualizar = () => setVersionPortal((actual) => actual + 1);
+    const intervalo = window.setInterval(actualizar, 30000);
+    window.addEventListener("focus", actualizar);
+    return () => { window.clearInterval(intervalo); window.removeEventListener("focus", actualizar); };
   }, [usuarioActual]);
 
   const registrarSolicitud = async (solicitud) => {
@@ -913,12 +882,13 @@ export default function App() {
     const rol = usuarioActual.rol;
     if (rol === "Cliente") return [
       { key: "portal_cliente", label: "Inicio", icon: "🏠" },
-      { key: "ahorro_inversion", label: "Ahorro e inversión", icon: "💰" },
+      ...(datosPortal?.prospecto?.rol_visible === "Cliente" ? [{ key: "mi_instalacion", label: "Mi instalación", icon: "🔧" }] : []),
+      ...(datosPortal?.prospecto?.rol_visible === "Cliente" ? [{ key: "ahorro_inversion", label: "Ahorro e inversión", icon: "💰" }] : []),
       { key: "datos_personales", label: "Datos personales", icon: "👤" },
     ];
     if (rol === "Técnico") return [
       { key: "solicitudes_dimensionamiento", label: "Solicitudes de dimensionamiento", icon: "📐" },
-      { key: "portal_tecnico", label: "Mis Tickets", icon: "🔧" },
+      { key: "instalaciones_campo", label: "Órdenes de instalación", icon: "🔧" },
       { key: "inventario", label: "Inventario Físico", icon: "📦" },
     ];
     if (rol === "Administrador") return [
@@ -928,6 +898,7 @@ export default function App() {
       { key: "inventario", label: "Inventario Físico", icon: "📦" },
       { key: "tarifas", label: "Tarifas y ahorro", icon: "⚡" },
       { key: "clientes", label: "Clientes", icon: "🗂️" },
+      { key: "pagos", label: "Verificación de pagos", icon: "💳" },
       { key: "notificaciones", label: "Notificaciones", icon: "✉️" },
       { key: "usuarios", label: "Usuarios y personal", icon: "👥" },
     ];
@@ -943,7 +914,7 @@ export default function App() {
   // Cálculos dinámicos para el Dashboard
   const leadsActivos = leads.filter(l => l.estado !== "Cerrado ganado" && l.estado !== "Cerrado perdido").length;
   const cotizacionesEmitidas = leads.filter((registro) => ["pendiente_respuesta", "aceptada_pendiente_pago", "venta_confirmada"].includes(registro.estado_flujo));
-  const ingresosProyectados = 0;
+  const rolPortal = datosPortal?.prospecto?.rol_visible || "Prospecto";
 
   const alternarSidebar = () => {
     const contraido = !sidebarContraido;
@@ -969,18 +940,18 @@ export default function App() {
         <div className={`border-b ${sidebarContraido ? "px-2 py-4" : "p-5"}`}>
           <div className={`flex items-center ${sidebarContraido ? "flex-col gap-3" : "justify-between gap-2"}`}>
             <p className="text-xl font-bold text-indigo-700" title={sidebarContraido ? "ATLAS CRM" : undefined}>{sidebarContraido ? "A" : "ATLAS CRM"}</p>
-            <button type="button" onClick={alternarSidebar} aria-expanded={!sidebarContraido} aria-label={sidebarContraido ? "Expandir menú" : "Contraer menú"} title={sidebarContraido ? "Expandir menú" : "Contraer menú"} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700">
+            <button type="button" onClick={alternarSidebar} aria-expanded={!sidebarContraido} aria-label={sidebarContraido ? "Expandir menú" : "Contraer menú"} title={sidebarContraido ? "Expandir menú" : "Contraer menú"} className="hidden rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 sm:inline-flex">
               <span aria-hidden="true" className="block text-sm leading-none">{sidebarContraido ? "»" : "«"}</span>
             </button>
           </div>
           {sidebarContraido ? (
-            <div className="mx-auto mt-3 flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-sm font-bold text-slate-700" title={usuarioActual.rol === "Cliente" ? "Prospecto" : `${usuarioActual.rol} · ${usuarioActual.nombre}`}>
-              {(usuarioActual.rol === "Cliente" ? "Prospecto" : usuarioActual.nombre || usuarioActual.rol).charAt(0).toUpperCase()}
+            <div className="mx-auto mt-3 flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-sm font-bold text-slate-700" title={usuarioActual.rol === "Cliente" ? rolPortal : `${usuarioActual.rol} · ${usuarioActual.nombre}`}>
+              {(usuarioActual.rol === "Cliente" ? rolPortal : usuarioActual.nombre || usuarioActual.rol).charAt(0).toUpperCase()}
             </div>
           ) : (
             <div className="mt-2 bg-slate-100 p-2 rounded text-xs">
               {usuarioActual.rol === "Cliente" ? (
-                <span className="font-bold text-slate-700">Prospecto</span>
+                <span className="font-bold text-slate-700">{rolPortal}</span>
               ) : (
                 <><span className="font-bold text-slate-700">{usuarioActual.rol}</span><br/><span className="text-slate-500">{usuarioActual.nombre}</span></>
               )}
@@ -1016,10 +987,11 @@ export default function App() {
                 <p className="text-3xl font-bold text-indigo-600 mt-1">{cotizacionesEmitidas.length}</p>
               </div>
               <div className="bg-green-50 rounded-xl p-4">
-                <p className="text-xs text-slate-500">Ingresos (Aprobadas)</p>
-                <p className="text-2xl font-bold text-green-600 mt-1">{fmt(ingresosProyectados)}</p>
+                <p className="text-xs text-slate-500">Ingresos confirmados</p>
+                <p className="text-2xl font-bold text-green-600 mt-1">{ingresos ? fmt(ingresos.total) : '—'}</p>
               </div>
             </div>
+            {errorIngresos && <p role="alert" className="text-sm text-red-700">{errorIngresos}</p>}
             <p className="text-sm text-slate-400 mt-4">Selecciona un módulo en el menú lateral para comenzar a operar.</p>
           </div>
         )}
@@ -1035,9 +1007,8 @@ export default function App() {
         >
           <dl className="grid gap-3 text-sm sm:grid-cols-2">
             <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Cuenta del cliente</dt><dd className="break-all font-semibold">{registroExitoso.email}</dd></div>
-            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Acceso</dt><dd className="font-semibold">Se envió un enlace de acceso para que el cliente cree su contraseña.</dd></div>
+            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">Acceso</dt><dd className="font-semibold">El correo de activación incluye un enlace para establecer la contraseña de la cuenta.</dd></div>
           </dl>
-          <AvisoCorreo correo={registroExitoso.correo} tipo="credenciales" destinatario={registroExitoso.email} />
         </Modal>}
 
         {pagina === "leads" && <Cotizacion
@@ -1049,15 +1020,19 @@ export default function App() {
         {pagina === "cotizacion" && <GeneradorCotizacion lead={leadActivo} resultadoSolar={resultadoSolar} inventario={inventario} onGuardar={() => setPagina("historial")} />}
         {pagina === "inventario" && <><GestionInventario inventario={inventario} setInventario={setInventario} usuario={usuarioActual} />{errorInventario && <p className="mx-auto max-w-6xl px-6 pb-6 text-sm text-red-700">{errorInventario}</p>}</>}
         {pagina === "reactivacion" && <ReactivacionComercial clientes={inactivos} setClientes={setInactivos} />}
-        {pagina === "portal_tecnico" && <PortalTecnico tickets={tickets} setTickets={setTickets} />}
+        {pagina === "instalaciones_campo" && usuarioActual.rol === "Técnico" && <div className="mx-auto max-w-6xl p-4 sm:p-6"><InstalacionesTecnico token={usuarioActual.token} /></div>}
         {pagina === "solicitudes_dimensionamiento" && <SolicitudesDimensionamiento token={usuarioActual.token} inventario={inventario} />}
         
-        {pagina === "portal_cliente" && <PortalCliente usuarioActual={usuarioActual} datos={datosPortal} cargando={cargandoPortal} error={errorPortal} />}
+        {pagina === "portal_cliente" && <PortalCliente usuarioActual={usuarioActual} datos={datosPortal} cargando={cargandoPortal} error={errorPortal} onAceptar={() => setPagina("firma_cotizacion")} onOrden={() => setPagina("orden_pago")} onInstalacion={(id, cotizacionId) => { setOrdenInstalacionSeleccionada({ id: id || null, cotizacionId: cotizacionId || null }); setPagina("mi_instalacion"); }} onActualizada={(datos) => { setDatosPortal(datos); setErrorPortal(""); }} />}
+        {pagina === "firma_cotizacion" && usuarioActual.rol === "Cliente" && <FirmarCotizacion key={datosPortal?.cotizacion_emitida?.id} token={usuarioActual.token} cotizacion={datosPortal?.cotizacion_emitida} onVolver={() => setPagina("portal_cliente")} onFirmada={(cotizacion) => { setDatosPortal((actual) => ({ ...actual, cotizacion_emitida: cotizacion })); setVersionPortal((actual) => actual + 1); setPagina("orden_pago"); }} />}
+        {pagina === "orden_pago" && usuarioActual.rol === "Cliente" && <OrdenPago token={usuarioActual.token} cotizacion={datosPortal?.cotizacion_emitida} onVolver={() => setPagina("portal_cliente")} />}
+        {pagina === "mi_instalacion" && usuarioActual.rol === "Cliente" && <SeguimientoInstalacion token={usuarioActual.token} ordenInicialId={ordenInstalacionSeleccionada?.id} cotizacionInicialId={ordenInstalacionSeleccionada?.cotizacionId} onVolver={() => setPagina("portal_cliente")} />}
         {pagina === "datos_personales" && <DatosPersonales datos={datosPortal} cargando={cargandoPortal} error={errorPortal} token={usuarioActual.token} />}
-        {pagina === "ahorro_inversion" && <AhorroInversion datos={datosPortal} cargando={cargandoPortal} error={errorPortal} onVolver={() => setPagina("portal_cliente")} />}
+        {pagina === "ahorro_inversion" && datosPortal?.prospecto?.rol_visible === "Cliente" && <AhorroInversion token={usuarioActual.token} onVolver={() => setPagina("portal_cliente")} />}
         {pagina === "tarifas" && usuarioActual.rol === "Administrador" && <TarifasCfe token={usuarioActual.token} />}
         {pagina === "historial" && <ListaSolicitudes registros={leads} token={usuarioActual.token} usuario={usuarioActual} onActualizarRegistro={(registro) => setLeads((actuales) => actuales.map((item) => item.id === registro.id ? registro : item))} />}
         {pagina === "notificaciones" && usuarioActual.rol === "Administrador" && <Notificaciones token={usuarioActual.token} />}
+        {pagina === "pagos" && usuarioActual.rol === "Administrador" && <PagosAdmin token={usuarioActual.token} onCambio={() => setVersionLeads((actual) => actual + 1)} />}
         {pagina === "clientes" && usuarioActual.rol === "Administrador" &&<Clientes token={usuarioActual.token} onCambio={() => setVersionLeads((actual) => actual + 1)} />}
         {pagina === "usuarios" && usuarioActual.rol === "Administrador" && <UsuariosPersonal token={usuarioActual.token} />}
       </main>

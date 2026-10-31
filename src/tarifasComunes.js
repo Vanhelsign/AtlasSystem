@@ -4,7 +4,7 @@ export const TIPOS_TARIFA = { domestica: "Doméstica", dac: "DAC (alto consumo)"
 export const TEMPORADAS = { todo_el_anio: "Todo el año", verano: "Verano", fuera_verano: "Fuera de verano" };
 export const ORDEN_TEMPORADAS = ["verano", "fuera_verano", "todo_el_anio"];
 export const MAX_BLOQUES = 4;
-export const ORIGENES = { prueba: "Dato de prueba", recibo: "Tomado de un recibo" };
+export const ORIGENES = { prueba: "Supuesto de cálculo", recibo: "Tomado de un recibo" };
 
 const NOMBRES_BLOQUES = {
   1: ["Único"],
@@ -15,4 +15,4 @@ const NOMBRES_BLOQUES = {
 
 export const nombreBloque = (indice, total) => NOMBRES_BLOQUES[total]?.[indice] ?? `Bloque ${indice + 1}`;
 export const texto = (valor) => valor === null || valor === undefined ? "" : String(valor);
-export const etiquetaOrigen = (origen) => origen === "recibo" ? "recibo" : origen === "prueba" ? "prueba" : "origen sin especificar";
+export const etiquetaOrigen = (origen) => origen === "recibo" ? "recibo" : origen === "prueba" ? "supuesto de cálculo" : "origen sin especificar";

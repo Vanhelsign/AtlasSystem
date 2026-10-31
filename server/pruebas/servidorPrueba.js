@@ -23,8 +23,8 @@ export async function iniciarServidorPrueba(entornoExtra = {}) {
   const puerto = 41000 + Math.floor(Math.random() * 9000)
   // Sin el .env real (ATLAS_ENV_ARCHIVO apunta a un archivo inexistente) ni variables de correo heredadas:
   // las pruebas trabajan en modo simulado salvo que entornoExtra configure otro SMTP.
-  const heredado = Object.fromEntries(Object.entries(process.env).filter(([nombre]) => !/^(SMTP_|CORREO_|APP_URL$)/.test(nombre)))
-  const proceso = spawn(process.execPath, ['--no-warnings', join(raizProyecto, 'server', 'api.js')], {
+  const heredado = Object.fromEntries(Object.entries(process.env).filter(([nombre]) => !/^(SMTP_|CORREO_|ATLAS_PAGO_|NODE_ENV$|APP_URL$)/.test(nombre)))
+  const opcionesProceso = {
     cwd: carpeta,
     env: {
       ...heredado,
@@ -32,11 +32,14 @@ export async function iniciarServidorPrueba(entornoExtra = {}) {
       ATLAS_DB_PATH: base,
       ATLAS_ENV_ARCHIVO: join(carpeta, 'sin-env'),
       ATLAS_CORREOS_DIR: carpetaCorreos,
+      ATLAS_EVIDENCIAS_DIR: join(carpeta, 'evidencias'),
       APP_URL: 'http://atlas.example',
       ...entornoExtra,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  }
+  const crearProceso = () => spawn(process.execPath, ['--no-warnings', join(raizProyecto, 'server', 'api.js')], opcionesProceso)
+  let proceso = crearProceso()
   let salida = ''
   proceso.stdout.on('data', (dato) => { salida += dato })
   proceso.stderr.on('data', (dato) => { salida += dato })
@@ -81,7 +84,20 @@ export async function iniciarServidorPrueba(entornoExtra = {}) {
     await new Promise((r) => proceso.once('exit', r))
     rmSync(carpeta, { recursive: true, force: true })
   }
-  return { url, base, carpeta, carpetaCorreos, pedir, iniciarSesion, sql, sqlTodas, correos, leerCorreo, salida: () => salida, detener }
+  const reiniciar = async (entornoReinicio = {}) => {
+    const termino = new Promise((r) => proceso.once('exit', r))
+    proceso.kill(); await termino
+    Object.assign(opcionesProceso.env, entornoReinicio)
+    proceso = crearProceso()
+    proceso.stdout.on('data', (dato) => { salida += dato })
+    proceso.stderr.on('data', (dato) => { salida += dato })
+    for (let intento = 0; intento < 80; intento++) {
+      try { if ((await fetch(`${url}/health`)).ok) return } catch { /* Esperar el nuevo proceso. */ }
+      await espera(150)
+    }
+    throw new Error(`No se pudo reiniciar el servidor: ${salida}`)
+  }
+  return { url, base, carpeta, carpetaCorreos, pedir, iniciarSesion, sql, sqlTodas, correos, leerCorreo, salida: () => salida, detener, reiniciar }
 }
 
 // Decodifica lo necesario de un .eml para las pruebas: encabezados y las partes de texto y HTML.
@@ -118,8 +134,8 @@ function hashPrueba(password) {
 }
 
 // Registra una solicitud como el agente de prueba y devuelve la respuesta de la API.
-// Por defecto deja la cuenta como las creadas antes de la Fase 4 (contraseña 123, sin cambio obligatorio),
-// que es lo que esperan las pruebas de contraseñas y sesiones. Con { contrasena: null } conserva la temporal.
+// Permite fijar una contraseña en la base temporal. Con { contrasena: null }
+// conserva la cuenta tal como la creó la API (sin sobrescribir su hash ni sus opciones de acceso).
 export async function registrarSolicitudPrueba(servidor, email, estado = 'Nuevo León', { contrasena = '123' } = {}) {
   const { datos } = await servidor.iniciarSesion('ventas@atlas.com')
   const respuesta = await servidor.pedir('/solicitudes', {

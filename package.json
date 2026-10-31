@@ -19,6 +19,8 @@
     "@rolldown/binding-win32-x64-msvc": "^1.0.2",
     "express": "^5.2.1",
     "nodemailer": "10.0.14",
+    "pdf-lib": "1.17.1",
+    "pngjs": "7.0.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "read-excel-file": "9.3.10",

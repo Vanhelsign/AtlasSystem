@@ -16,6 +16,7 @@ data/*.sqlite-shm
 data/*.sqlite-wal
 data/backups/
 data/correos/
+data/evidencias/
 
 # Configuración local con secretos (SMTP). .env.example sí se versiona.
 .env

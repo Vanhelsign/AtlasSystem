@@ -253,6 +253,7 @@ CREATE TABLE IF NOT EXISTS ordenes_instalacion (
   tecnico_id INTEGER,
   fecha_programada TEXT,
   fecha_fin_real TEXT,
+  iniciada_at TEXT,
   estatus_obra TEXT NOT NULL DEFAULT 'asignada' CHECK (estatus_obra IN (
     'asignada', 'en_progreso', 'incidencia', 'completada'
   )),
@@ -288,6 +289,46 @@ CREATE TABLE IF NOT EXISTS mantenimientos_programados (
   UNIQUE (orden_id, tipo_servicio),
   FOREIGN KEY (orden_id) REFERENCES ordenes_instalacion(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS incidencias_instalacion (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  orden_id INTEGER NOT NULL REFERENCES ordenes_instalacion(id) ON DELETE CASCADE,
+  tecnico_id INTEGER NOT NULL REFERENCES usuarios_personal(id) ON DELETE RESTRICT,
+  parte INTEGER NOT NULL CHECK (parte BETWEEN 1 AND 3),
+  actividad_codigo TEXT,
+  descripcion TEXT NOT NULL,
+  fecha_ocurrencia TEXT NOT NULL,
+  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente','resuelta')),
+  resolucion TEXT,
+  resuelta_at TEXT,
+  resuelta_por INTEGER REFERENCES usuarios_personal(id) ON DELETE RESTRICT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS fotos_instalacion (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  orden_id INTEGER NOT NULL REFERENCES ordenes_instalacion(id) ON DELETE CASCADE,
+  parte INTEGER NOT NULL CHECK (parte BETWEEN 1 AND 3),
+  actividad_codigo TEXT,
+  incidencia_id INTEGER REFERENCES incidencias_instalacion(id) ON DELETE CASCADE,
+  tecnico_id INTEGER NOT NULL REFERENCES usuarios_personal(id) ON DELETE RESTRICT,
+  clave_carga TEXT NOT NULL,
+  archivo TEXT NOT NULL UNIQUE,
+  mime TEXT NOT NULL CHECK (mime IN ('image/png','image/jpeg')),
+  bytes INTEGER NOT NULL CHECK (bytes BETWEEN 1 AND 5242880),
+  sha256 TEXT NOT NULL,
+  descripcion TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (orden_id, clave_carga)
+);
+CREATE TABLE IF NOT EXISTS operaciones_instalacion (
+  orden_id INTEGER NOT NULL REFERENCES ordenes_instalacion(id) ON DELETE CASCADE,
+  clave TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (orden_id, clave)
+);
+CREATE INDEX IF NOT EXISTS fotos_instalacion_orden_idx ON fotos_instalacion(orden_id, parte);
+CREATE INDEX IF NOT EXISTS incidencias_instalacion_orden_idx ON incidencias_instalacion(orden_id, estado);
 
 CREATE TABLE IF NOT EXISTS registro_notificaciones (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -377,3 +418,44 @@ CREATE TABLE IF NOT EXISTS parametros_ahorro (
 );
 
 CREATE INDEX IF NOT EXISTS tarifas_bloques_tarifa_idx ON tarifas_bloques(tarifa_id, temporada, orden);
+
+CREATE TABLE IF NOT EXISTS ordenes_pago (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cotizacion_id INTEGER NOT NULL UNIQUE REFERENCES cotizaciones_versiones(id) ON DELETE RESTRICT,
+  firma_id INTEGER NOT NULL UNIQUE REFERENCES firmas_cotizacion(id) ON DELETE RESTRICT,
+  folio TEXT NOT NULL UNIQUE,
+  importe REAL NOT NULL CHECK (importe > 0),
+  moneda TEXT NOT NULL DEFAULT 'MXN' CHECK (moneda = 'MXN'),
+  instrucciones TEXT,
+  emitida_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  limite_at TEXT NOT NULL,
+  estado TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'vencida', 'pagada')),
+  vencida_at TEXT,
+  pago_fecha TEXT,
+  pago_referencia TEXT,
+  confirmada_at TEXT,
+  confirmada_por INTEGER REFERENCES usuarios_personal(id) ON DELETE RESTRICT,
+  motivo_pago_tardio TEXT,
+  datos_pago_json TEXT CHECK (datos_pago_json IS NULL OR json_valid(datos_pago_json)),
+  pago_simulado INTEGER NOT NULL DEFAULT 0 CHECK (pago_simulado IN (0, 1)),
+  simulada_por INTEGER REFERENCES cuentas_cliente(id) ON DELETE RESTRICT,
+  CHECK (estado <> 'pagada' OR
+    (pago_simulado = 0 AND pago_fecha IS NOT NULL AND pago_referencia IS NOT NULL AND confirmada_por IS NOT NULL) OR
+    (pago_simulado = 1 AND simulada_por IS NOT NULL AND confirmada_at IS NOT NULL))
+);
+CREATE TABLE IF NOT EXISTS proyecciones_compra (
+  cotizacion_id INTEGER PRIMARY KEY REFERENCES cotizaciones_versiones(id) ON DELETE CASCADE,
+  importe_contado REAL NOT NULL CHECK (importe_contado > 0),
+  datos_json TEXT NOT NULL CHECK (json_valid(datos_json)),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pagos_auditoria (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  orden_pago_id INTEGER NOT NULL REFERENCES ordenes_pago(id) ON DELETE CASCADE,
+  evento TEXT NOT NULL CHECK (evento IN ('emitida', 'vencida', 'confirmada')),
+  actor_id INTEGER,
+  detalle TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (orden_pago_id, evento)
+);

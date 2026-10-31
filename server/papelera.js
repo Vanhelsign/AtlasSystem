@@ -212,8 +212,13 @@ const REVISIONES = `(SELECT id FROM revisiones_tecnicas WHERE solicitud_id IN ${
 const CUENTAS = '(SELECT id FROM cuentas_cliente WHERE prospecto_id = :prospecto)'
 const TABLAS = [
   // [tabla, etiqueta, condición, se borra explícitamente (o cae por cascada de la fila anterior)]
+  ['pagos_auditoria', 'Auditoría de pagos', `orden_pago_id IN (SELECT id FROM ordenes_pago WHERE cotizacion_id IN ${COTIZACIONES})`, false],
+  ['ordenes_pago', 'Órdenes de pago', `cotizacion_id IN ${COTIZACIONES}`, true],
   ['firmas_cotizacion', 'Firmas de cotización', `cotizacion_id IN ${COTIZACIONES} OR cuenta_cliente_id IN ${CUENTAS}`, true],
   ['checklist_evidencias', 'Evidencias de instalación', `orden_id IN ${ORDENES}`, false],
+  ['fotos_instalacion', 'Fotografías de instalación', `orden_id IN ${ORDENES}`, false],
+  ['incidencias_instalacion', 'Incidencias de instalación', `orden_id IN ${ORDENES}`, false],
+  ['operaciones_instalacion', 'Operaciones de instalación', `orden_id IN ${ORDENES}`, false],
   ['mantenimientos_programados', 'Mantenimientos programados', `orden_id IN ${ORDENES}`, false],
   ['ordenes_instalacion', 'Órdenes de instalación', `cotizacion_id IN ${COTIZACIONES}`, true],
   ['cotizacion_version_items', 'Renglones de cotizaciones emitidas', `cotizacion_id IN ${COTIZACIONES}`, false],
@@ -236,8 +241,15 @@ const NOTIFICACIONES = `prospecto_id = :prospecto OR solicitud_id IN ${S}`
 // Las consultas con nombre comparten un mismo objeto de parámetros; cada una usa solo los que necesita.
 const conNombres = (sql) => {
   const sentencia = db.prepare(sql)
-  sentencia.setAllowUnknownNamedParameters(true)
-  return sentencia
+  // Node 22.14 no incluye setAllowUnknownNamedParameters. Pasar solo los
+  // parámetros usados conserva el mismo comportamiento en esa versión.
+  const nombres = new Set([...sql.matchAll(/:(\w+)/g)].map((coincidencia) => coincidencia[1]))
+  const usados = (parametros) => Object.fromEntries(Object.entries(parametros).filter(([clave]) => nombres.has(clave)))
+  return {
+    get: (parametros) => sentencia.get(usados(parametros)),
+    all: (parametros) => sentencia.all(usados(parametros)),
+    run: (parametros) => sentencia.run(usados(parametros)),
+  }
 }
 
 function alcance({ prospectoId = null, solicitudes = null }) {

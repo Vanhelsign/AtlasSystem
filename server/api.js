@@ -5,7 +5,10 @@ import { Buffer } from 'node:buffer'
 import { basename } from 'node:path'
 import process from 'node:process'
 import express from 'express'
-import { db, getProspecto, prospectSelect } from './database.js'
+import { db, getProspecto, prospectSelect, completarPreciosVenta } from './database.js'
+import { actualizarVencimientos, registrarRutasCompras, resumenCompra } from './compras.js'
+import { registrarRutasAhorro } from './ahorroCompras.js'
+import { registrarRutasInstalaciones } from './instalaciones.js'
 import { ESTADOS_MEXICO, nombreEstadoMexico, normalizarEstadoMexico } from '../shared/estadosMexico.js'
 import { estimarAhorro, faltantesDeTarifa, kwpDePaneles, PARAMETROS_POR_DEFECTO, validarBloques } from '../shared/ahorroSolar.js'
 import { horasSolaresPico } from '../shared/irradiacion.js'
@@ -31,6 +34,9 @@ const sesiones = new Map()
 
 // La importación de inventario envía hasta 2000 filas; se registra antes del límite general para que este la omita.
 app.use('/api/productos/importacion', express.json({ limit: '2mb' }))
+app.use('/api/portal/cotizaciones', express.json({ limit: '300kb' }))
+// Hasta tres fotos de 5 MB codificadas para transporte. Solo metadatos van a SQLite.
+app.use('/api/tecnico/instalaciones', express.json({ limit: '22mb' }))
 app.use(express.json({ limit: '100kb' }))
 
 function textoOpcional(value, campo) {
@@ -453,24 +459,6 @@ function getSolicitud(id) {
   }
 }
 
-// Lo que el prospecto ve de la estimación guardada al emitir; no recalcula ni expone costos internos.
-function ahorroPublico(supuestosJson) {
-  if (!supuestosJson) return { estado: 'no_disponible', motivo: 'Esta cotización se emitió antes de que ATLAS calculara estimaciones de ahorro.' }
-  const supuestos = JSON.parse(supuestosJson)
-  return {
-    estado: supuestos.estado,
-    motivo: supuestos.motivo,
-    calculado_at: supuestos.calculado_at,
-    consumo_mensual_kwh: supuestos.consumo_mensual_kwh,
-    consumo_objetivo_kwh: supuestos.consumo_objetivo_kwh,
-    kwp: supuestos.kwp,
-    irradiacion: supuestos.irradiacion,
-    parametros: supuestos.parametros,
-    tarifa: supuestos.tarifa && { codigo: supuestos.tarifa.codigo, nombre: supuestos.tarifa.nombre, pendiente_validar: supuestos.tarifa.pendiente_validar },
-    resultado: supuestos.resultado,
-  }
-}
-
 function getCotizacionPublica(solicitudId) {
   const cotizacion = db.prepare(`
     SELECT id, version, precio_venta, emitida_at, supuestos_ahorro
@@ -480,16 +468,10 @@ function getCotizacionPublica(solicitudId) {
   `).get(solicitudId)
   if (!cotizacion) return null
   return {
-    estado: 'Tu cotización está lista',
+    ...resumenCompra(cotizacion.id),
     version: cotizacion.version,
     precio_venta: cotizacion.precio_venta,
     emitida_at: cotizacion.emitida_at,
-    ahorro: ahorroPublico(cotizacion.supuestos_ahorro),
-    items: db.prepare(`
-      SELECT tipo, modelo, clasificacion, cantidad
-      FROM cotizacion_version_items
-      WHERE cotizacion_id = ? ORDER BY id
-    `).all(cotizacion.id),
   }
 }
 
@@ -1708,6 +1690,7 @@ app.get('/api/prospectos/:id', autenticar, permitirRoles('Administrador', 'Agent
 })
 
 app.get('/api/portal/prospectos/:id', autenticar, permitirRoles('Cliente'), (request, response) => {
+  actualizarVencimientos()
   const id = idValido(request.params.id)
   if (!id) return response.status(400).json({ error: 'Identificador inválido' })
   if (request.usuario.prospecto_id !== id) return response.status(403).json({ error: 'No tienes permiso para consultar este registro' })
@@ -1729,6 +1712,7 @@ app.get('/api/portal/prospectos/:id', autenticar, permitirRoles('Cliente'), (req
     direccion_calle: prospecto.direccion_calle,
     direccion_numero_exterior: prospecto.direccion_numero_exterior,
     direccion_numero_interior: prospecto.direccion_numero_interior,
+    rol_visible: db.prepare('SELECT cliente_desde FROM cuentas_cliente WHERE prospecto_id = ?').get(id)?.cliente_desde ? 'Cliente' : 'Prospecto',
   }
   response.json({
     prospecto: prospectoPublico,
@@ -1800,6 +1784,7 @@ app.post('/api/agente/solicitudes/:id/aprobar', autenticar, permitirRoles('Agent
         cotizacionId, item.producto_codigo, item.tipo_aplicado, item.modelo_aplicado,
         item.clasificacion_aplicada, item.cantidad, item.costo_unitario_aplicado, item.subtotal,
       )
+      completarPreciosVenta(cotizacionId)
       const actualizado = db.prepare(`
         UPDATE solicitudes_cotizacion SET estado_flujo = 'pendiente_respuesta'
         WHERE id = ? AND estado_flujo = 'en_preparacion'
@@ -1939,12 +1924,12 @@ app.post('/api/solicitudes', autenticar, permitirRoles('Agente'), async (request
         direccion.numeroInterior,
       )
 
-      // Contraseña aleatoria que nadie conoce (se descarta tras el hash): el cliente crea la suya con el enlace
-      // de un solo uso del correo. El token solo viaja en ese correo; la base guarda su hash.
-      const credencial = hashPassword(randomBytes(32).toString('base64url'))
+      // Acceso inicial del sistema de demostración: no depende de recibir el correo.
+      // Se conserva el hash con sal y el enlace existente como alternativa para elegir otra contraseña.
+      const credencial = hashPassword('123')
       const cuentaId = Number(db.prepare(`
         INSERT INTO cuentas_cliente (prospecto_id, email, password_hash, password_salt, rol, debe_cambiar_password)
-        VALUES (?, ?, ?, ?, 'Cliente', 1)
+        VALUES (?, ?, ?, ?, 'Cliente', 0)
       `).run(prospectoId, email, credencial.hash, credencial.salt).lastInsertRowid)
       tokenEnlace = emitirTokenCuenta(cuentaId)
 
@@ -2229,14 +2214,18 @@ const FILTROS_ENLACE = {
 
 app.get('/api/notificaciones', ...soloAdministrador, (request, response) => {
   const estado = request.query.estado ?? ''
+  // Resumen para el listado administrativo, independiente de aperturas/uso del enlace.
+  // El modo local conserva 'pendiente' en auditoría, pero se agrupa como envío procesado.
+  const resultadoEnvio = request.query.resultado_envio ?? ''
   const tipo = request.query.tipo ?? ''
   const enlace = request.query.enlace ?? ''
   const pagina = request.query.pagina === undefined ? 1 : idValido(request.query.pagina)
-  if ((estado && !ESTADOS_ENVIO.has(estado)) || (tipo && !TIPOS_CORREO.has(tipo)) || (enlace && !FILTROS_ENLACE[enlace]) || !pagina) {
+  if (!['', 'enviado', 'error'].includes(resultadoEnvio) || (estado && !ESTADOS_ENVIO.has(estado)) || (tipo && !TIPOS_CORREO.has(tipo)) || (enlace && !FILTROS_ENLACE[enlace]) || !pagina) {
     return response.status(400).json({ error: 'Filtro no válido' })
   }
-  const condicion = `WHERE (? = '' OR n.estado_envio = ?) AND (? = '' OR n.tipo_correo = ?)${enlace ? FILTROS_ENLACE[enlace] : ''}`
-  const parametros = [estado, estado, tipo, tipo]
+  const condicion = `WHERE (? = '' OR n.estado_envio = ?) AND (? = '' OR n.tipo_correo = ?)
+    AND (? = '' OR (? = 'enviado' AND n.estado_envio IN ('pendiente','aceptado','entregado')) OR (? = 'error' AND n.estado_envio = 'fallido'))${enlace ? FILTROS_ENLACE[enlace] : ''}`
+  const parametros = [estado, estado, tipo, tipo, resultadoEnvio, resultadoEnvio, resultadoEnvio]
   const total = Number(db.prepare(`SELECT COUNT(*) AS total FROM registro_notificaciones n LEFT JOIN prospectos p ON p.id = n.prospecto_id ${condicion}`).get(...parametros).total)
   const filas = db.prepare(`${notificacionSelect} ${condicion} ORDER BY n.id DESC LIMIT ? OFFSET ?`)
     .all(...parametros, POR_PAGINA_NOTIFICACIONES, (pagina - 1) * POR_PAGINA_NOTIFICACIONES)
@@ -2319,6 +2308,10 @@ app.put('/api/prospectos/:id/consumo', autenticar, permitirRoles('Administrador'
     response.status(400).json({ error: error.message })
   }
 })
+
+registrarRutasCompras(app, autenticar, permitirRoles)
+registrarRutasAhorro(app, autenticar, permitirRoles)
+registrarRutasInstalaciones(app, autenticar, permitirRoles)
 
 app.use((error, _request, response, next) => {
   void next

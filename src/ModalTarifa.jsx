@@ -111,7 +111,7 @@ function EditorBloques({ temporada, filas, mostrarErrores, onCambiar }) {
               </label>
               <label className="text-xs font-medium">Origen del precio
                 <SelectorOrigen valor={vacio(fila.precio) ? "prueba" : fila.origen} deshabilitado={vacio(fila.precio)} etiqueta={`Origen del precio de ${etiqueta}`} onCambiar={(valor) => cambiarFila(indice, "origen", valor)} />
-                {!vacio(fila.precio) && fila.origen === "" && <span className="mt-1 block text-xs font-normal text-amber-700">Indica si es de prueba o de un recibo</span>}
+                {!vacio(fila.precio) && fila.origen === "" && <span className="mt-1 block text-xs font-normal text-amber-700">Indica si es un supuesto de cálculo o un valor tomado de un recibo</span>}
               </label>
             </div>
           </div>

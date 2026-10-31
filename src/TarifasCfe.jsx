@@ -100,7 +100,7 @@ export default function TarifasCfe({ token }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold">Tarifas y ahorro</h1>
-          <p className="mt-1 text-sm text-slate-500">Tarifas de CFE y supuestos con los que se estima el ahorro de cada cotización. Los precios se capturan sin IVA.</p>
+          <p className="mt-1 text-sm text-slate-500">Tarifas de CFE y supuestos con los que se estima el ahorro de cada cotización. Los precios se capturan en pesos mexicanos (MXN), sin IVA.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={recargar} className={BOTON_SECUNDARIO}>Recargar</button>
@@ -199,7 +199,7 @@ function TablaBloques({ bloques }) {
                   <tr key={bloque.orden}>
                     <td className="py-1 pr-2 text-slate-600">{nombreBloque(indice, lista.length)}</td>
                     <td className="py-1 pr-2 text-slate-600">{bloque.hasta_kwh === null ? `más de ${fmtNumero(bloque.desde_kwh)} kWh` : `${fmtNumero(bloque.desde_kwh)}–${fmtNumero(bloque.hasta_kwh)} kWh`}</td>
-                    <td className={`py-1 text-right font-medium ${bloque.precio_kwh === null ? "text-amber-700" : ""}`}>{bloque.precio_kwh === null ? "sin precio" : <>{fmtCentavos(bloque.precio_kwh)}/kWh <span className={`block text-[11px] font-normal ${bloque.origen_precio === "recibo" ? "text-green-700" : "text-amber-700"}`}>{etiquetaOrigen(bloque.origen_precio)}</span></>}</td>
+                    <td className={`py-1 text-right font-medium ${bloque.precio_kwh === null ? "text-amber-700" : ""}`}>{bloque.precio_kwh === null ? "sin precio" : <>{fmtCentavos(bloque.precio_kwh)}/kWh {bloque.origen_precio !== "prueba" && <span className={`block text-[11px] font-normal ${bloque.origen_precio === "recibo" ? "text-green-700" : "text-amber-700"}`}>{etiquetaOrigen(bloque.origen_precio)}</span>}</>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -230,7 +230,7 @@ function TarjetaTarifa({ tarifa, dac, onEditar, onEliminar }) {
         </div>
       </div>
       <dl className="grid grid-cols-2 gap-2 text-xs">
-        <div><dt className="text-slate-500">Cargo fijo mensual</dt><dd className={`font-semibold ${tarifa.cargo_fijo_mensual === null ? "text-amber-700" : ""}`}>{tarifa.cargo_fijo_mensual === null ? "sin capturar" : <>{fmtCentavos(tarifa.cargo_fijo_mensual)} <span className={`text-[11px] font-normal ${tarifa.origen_cargo_fijo === "recibo" ? "text-green-700" : "text-amber-700"}`}>({etiquetaOrigen(tarifa.origen_cargo_fijo)})</span></>}</dd></div>
+        <div><dt className="text-slate-500">Cargo fijo mensual</dt><dd className={`font-semibold ${tarifa.cargo_fijo_mensual === null ? "text-amber-700" : ""}`}>{tarifa.cargo_fijo_mensual === null ? "sin capturar" : <>{fmtCentavos(tarifa.cargo_fijo_mensual)} {tarifa.origen_cargo_fijo !== "prueba" && <span className={`text-[11px] font-normal ${tarifa.origen_cargo_fijo === "recibo" ? "text-green-700" : "text-amber-700"}`}>({etiquetaOrigen(tarifa.origen_cargo_fijo)})</span>}</>}</dd></div>
         {tarifa.tipo === "domestica" && <div><dt className="text-slate-500">Límite DAC</dt><dd className="font-semibold">{tarifa.limite_dac_kwh ? `${fmtNumero(tarifa.limite_dac_kwh)} kWh/mes → ${dac?.codigo ?? "sin tarifa DAC"}` : "Sin límite"}</dd></div>}
         <div><dt className="text-slate-500">Vigencia desde</dt><dd className="font-semibold">{tarifa.vigencia_desde ?? "sin capturar"}</dd></div>
         <div><dt className="text-slate-500">Estados asignados</dt><dd className="font-semibold">{tarifa.estados.length}</dd></div>

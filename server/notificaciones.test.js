@@ -5,8 +5,15 @@ import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
-import { aprobarSolicitudPrueba, iniciarServidorPrueba, registrarSolicitudPrueba } from './pruebas/servidorPrueba.js'
+import { aprobarSolicitudPrueba, iniciarServidorPrueba, registrarSolicitudPrueba as registrarSolicitudActual } from './pruebas/servidorPrueba.js'
 import { smtpFalso } from './pruebas/smtpFalso.js'
+
+// Compatibilidad de reenvíos con cuentas anteriores que todavía esperan crear su contraseña.
+async function registrarSolicitudPrueba(servidor, ...argumentos) {
+  const registro = await registrarSolicitudActual(servidor, ...argumentos)
+  servidor.sql('UPDATE cuentas_cliente SET debe_cambiar_password = 1 WHERE prospecto_id = ?', registro.registro.id)
+  return registro
+}
 
 const tokenDe = (correo) => /#crear-contrasena=([A-Za-z0-9_-]{43})/.exec(correo.texto)?.[1]
 const CLAVE = 'ClavePropia2026'
@@ -222,7 +229,16 @@ describe('modo simulado: reenvío, notificaciones y permisos', () => {
     const credenciales = (await pedir('/notificaciones?tipo=credenciales&estado=pendiente', { token: sesion.admin })).datos
     assert.ok(credenciales.notificaciones.length > 0)
     assert.ok(credenciales.notificaciones.every((correo) => correo.tipo === 'credenciales' && correo.estado === 'pendiente'))
-    for (const consulta of ['?estado=raro', '?tipo=otro', '?pagina=0', '?pagina=x']) assert.equal((await pedir(`/notificaciones${consulta}`, { token: sesion.admin })).estado, 400, consulta)
+    for (const consulta of ['?estado=raro', '?tipo=otro', '?pagina=0', '?pagina=x', '?resultado_envio=raro']) assert.equal((await pedir(`/notificaciones${consulta}`, { token: sesion.admin })).estado, 400, consulta)
+    for (const resultado of ['enviado', 'error']) {
+      const respuesta = await pedir(`/notificaciones?resultado_envio=${resultado}`, { token: sesion.admin })
+      assert.equal(respuesta.estado, 200)
+      const condicion = resultado === 'error' ? "estado_envio = 'fallido'" : "estado_envio IN ('pendiente','aceptado','entregado')"
+      assert.equal(respuesta.datos.total, servidor.sqlTodas(`SELECT COUNT(*) AS n FROM registro_notificaciones WHERE ${condicion}`)[0].n)
+      assert.ok(respuesta.datos.notificaciones.every(n => resultado === 'error' ? n.estado === 'fallido' : ['pendiente', 'aceptado', 'entregado'].includes(n.estado)))
+    }
+    const combinados = await pedir('/notificaciones?resultado_envio=enviado&tipo=credenciales', { token: sesion.admin })
+    assert.ok(combinados.datos.notificaciones.every(n => n.tipo === 'credenciales' && n.estado !== 'fallido'))
     // Más de 50: la segunda página trae el resto.
     for (let i = 0; i < 55; i++) servidor.sql("INSERT INTO registro_notificaciones (destinatario_email, tipo_correo, estado_envio) VALUES ('relleno@ejemplo.com', 'recordatorio', 'aceptado')")
     const primera = (await pedir('/notificaciones?tipo=recordatorio', { token: sesion.admin })).datos

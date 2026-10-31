@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import process from 'node:process'
 import { ESTADOS_MEXICO, normalizarEstadoMexico } from '../shared/estadosMexico.js'
+import { repartirPrecioVenta } from '../shared/preciosVenta.js'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 const dataDir = join(serverDir, '..', 'data')
@@ -117,6 +118,35 @@ for (const [tabla, columnas] of [
   ['cuentas_cliente', [
     ['debe_cambiar_password', 'INTEGER NOT NULL DEFAULT 0 CHECK (debe_cambiar_password IN (0, 1))'],
     ['password_actualizada_at', 'TEXT'],
+    ['cliente_desde', 'TEXT'],
+  ]],
+  ['firmas_cotizacion', [
+    ['nombre_firmante', 'TEXT'],
+    ['conformidad_texto', 'TEXT'],
+    ['snapshot_json', 'TEXT CHECK (snapshot_json IS NULL OR json_valid(snapshot_json))'],
+    ['snapshot_sha256', 'TEXT'],
+  ]],
+  ['ordenes_instalacion', [
+    ['iniciada_at', 'TEXT'],
+    ['tomada_at', 'TEXT'],
+    ['parte_actual', 'INTEGER NOT NULL DEFAULT 1 CHECK (parte_actual BETWEEN 1 AND 3)'],
+    ['revision_avance', 'INTEGER NOT NULL DEFAULT 0'],
+    ['postergada_at', 'TEXT'],
+    ['motivo_postergacion', 'TEXT'],
+  ]],
+  ['checklist_evidencias', [
+    ['actividad_codigo', 'TEXT'],
+    ['parte', 'INTEGER CHECK (parte BETWEEN 1 AND 3)'],
+    ['tecnico_id', 'INTEGER REFERENCES usuarios_personal(id) ON DELETE RESTRICT'],
+  ]],
+  ['ordenes_pago', [
+    ['datos_pago_json', 'TEXT CHECK (datos_pago_json IS NULL OR json_valid(datos_pago_json))'],
+    ['pago_simulado', 'INTEGER NOT NULL DEFAULT 0 CHECK (pago_simulado IN (0, 1))'],
+    ['simulada_por', 'INTEGER REFERENCES cuentas_cliente(id) ON DELETE RESTRICT'],
+  ]],
+  ['cotizacion_version_items', [
+    ['precio_unitario_venta', 'REAL CHECK (precio_unitario_venta IS NULL OR precio_unitario_venta >= 0)'],
+    ['subtotal_venta', 'REAL CHECK (subtotal_venta IS NULL OR subtotal_venta >= 0)'],
   ]],
   // Fase 4: notificaciones por correo. Los registros existentes quedan con 0 intentos y sin solicitud.
   ['registro_notificaciones', [
@@ -150,9 +180,56 @@ for (const [tabla, columnas] of [
   }
 }
 // Va después de las columnas: en una base anterior a la Fase 4, solicitud_id no existe hasta el ALTER.
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS checklist_actividad_idx ON checklist_evidencias(orden_id, actividad_codigo) WHERE actividad_codigo IS NOT NULL;')
 db.exec('CREATE INDEX IF NOT EXISTS notificaciones_solicitud_idx ON registro_notificaciones(solicitud_id, created_at);')
 db.exec('CREATE INDEX IF NOT EXISTS prospectos_eliminado_idx ON prospectos(eliminado_at);')
 db.exec('CREATE INDEX IF NOT EXISTS solicitudes_eliminado_idx ON solicitudes_cotizacion(prospecto_id, eliminado_at);')
+
+// La confirmación simulada no debe exigir ni inventar un administrador o una fecha
+// de transferencia. Reconstruir solo el CHECK antiguo, conservando filas y relaciones.
+const sqlOrdenesPago = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ordenes_pago'").get().sql
+if (!sqlOrdenesPago.includes('pago_simulado = 0 AND pago_fecha')) {
+  const anterior = "CHECK (estado <> 'pagada' OR (pago_fecha IS NOT NULL AND pago_referencia IS NOT NULL AND confirmada_por IS NOT NULL))"
+  if (!sqlOrdenesPago.includes(anterior)) throw new Error('Esquema de órdenes de pago no reconocido; no se modificó la tabla')
+  if (db.prepare('SELECT COUNT(*) AS n FROM ordenes_pago').get().n) respaldarBase('antes-pago-simulado')
+  const columnas = db.prepare('PRAGMA table_info(ordenes_pago)').all().map((c) => `"${c.name}"`).join(', ')
+  const secuencia = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'ordenes_pago'").get()?.seq ?? 0
+  const objetos = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = 'ordenes_pago' AND type IN ('index', 'trigger') AND sql IS NOT NULL").all()
+  const nuevo = `CHECK (estado <> 'pagada' OR
+    (pago_simulado = 0 AND pago_fecha IS NOT NULL AND pago_referencia IS NOT NULL AND confirmada_por IS NOT NULL) OR
+    (pago_simulado = 1 AND simulada_por IS NOT NULL AND confirmada_at IS NOT NULL))`
+  db.exec('PRAGMA foreign_keys = OFF')
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    const total = db.prepare('SELECT COUNT(*) AS n FROM ordenes_pago').get().n
+    db.exec(sqlOrdenesPago.replace(/^CREATE TABLE\s+(?:"ordenes_pago"|ordenes_pago)/, 'CREATE TABLE ordenes_pago_nueva').replace(anterior, nuevo))
+    db.exec(`INSERT INTO ordenes_pago_nueva (${columnas}) SELECT ${columnas} FROM ordenes_pago`)
+    db.exec('DROP TABLE ordenes_pago; ALTER TABLE ordenes_pago_nueva RENAME TO ordenes_pago;')
+    for (const objeto of objetos) db.exec(objeto.sql)
+    db.prepare("DELETE FROM sqlite_sequence WHERE name = 'ordenes_pago'").run()
+    db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('ordenes_pago', max(?, (SELECT COALESCE(MAX(id), 0) FROM ordenes_pago)))").run(secuencia)
+    if (db.prepare('SELECT COUNT(*) AS n FROM ordenes_pago').get().n !== total || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('La migración de pagos no superó la verificación de integridad')
+    db.exec('COMMIT')
+  } catch (err) { db.exec('ROLLBACK'); throw err } finally { db.exec('PRAGMA foreign_keys = ON') }
+}
+
+// Las versiones antiguas conservan el total y reciben un desglose comercial, nunca costos públicos.
+export function completarPreciosVenta(cotizacionId) {
+  const cotizacion = db.prepare('SELECT precio_venta FROM cotizaciones_versiones WHERE id = ?').get(cotizacionId)
+  const items = db.prepare('SELECT * FROM cotizacion_version_items WHERE cotizacion_id = ? ORDER BY id').all(cotizacionId)
+  if (!cotizacion || !items.length || items.every((item) => item.subtotal_venta !== null && item.precio_unitario_venta !== null)) return
+  const precios = repartirPrecioVenta(items, cotizacion.precio_venta)
+  const actualizar = db.prepare('UPDATE cotizacion_version_items SET precio_unitario_venta = ?, subtotal_venta = ? WHERE id = ?')
+  items.forEach((item, indice) => actualizar.run(precios[indice].precio_unitario_venta, precios[indice].subtotal_venta, item.id))
+}
+db.exec('BEGIN IMMEDIATE')
+try {
+  for (const cotizacion of db.prepare('SELECT id FROM cotizaciones_versiones').all()) completarPreciosVenta(cotizacion.id)
+  db.exec('COMMIT')
+} catch (error) {
+  db.exec('ROLLBACK')
+  throw error
+}
 
 // Enlaces de acceso ya existentes: un correo de credenciales con otro más reciente de la misma cuenta (mismo
 // prospecto) tenía un enlace que dejó de funcionar al emitirse el siguiente. Se marca 'reemplazado' con la fecha
@@ -407,6 +484,7 @@ export const prospectSelect = `
     cv.id AS cotizacion_version_id,
     cv.version AS cotizacion_version,
     cv.precio_venta,
+    (SELECT pago_simulado FROM ordenes_pago WHERE cotizacion_id = cv.id) AS pago_simulado,
     cv.emitida_at AS cotizacion_emitida_at,
     (SELECT periodo FROM historial_cfe WHERE solicitud_id = s.id ORDER BY id LIMIT 1) AS recibo_periodo,
     (SELECT mes_inicio FROM historial_cfe WHERE solicitud_id = s.id ORDER BY id LIMIT 1) AS recibo_mes_inicio
